@@ -50,11 +50,11 @@ class DetailedNotesGenerator:
         self._style = style
         self._formats = formats or []
         self._llm_call_count = 0
-        self._should_insert_screenshots()
 
-    def _should_insert_screenshots(self) -> None:
+    @property
+    def should_insert_screenshots(self) -> bool:
         """检测是否应插入截图标记"""
-        self.should_insert_screenshots = (
+        return (
             self._video_understanding
             and self._style == "knowledge_graph"
             and "screenshot" in self._formats
