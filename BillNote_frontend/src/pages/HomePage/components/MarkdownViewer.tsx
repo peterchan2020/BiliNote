@@ -25,6 +25,7 @@ import MarkmapEditor from '@/pages/HomePage/components/MarkmapComponent.tsx'
 import ChatPanel from '@/pages/HomePage/components/ChatPanel.tsx'
 import VideoBanner from '@/pages/HomePage/components/VideoBanner.tsx'
 import { NodeClickInfo, generateNodePrompt, PromptResult } from '@/utils/promptGenerator'
+import { exportNoteAsZip } from '@/utils/exportZip'
 import { ViewMode } from '@/pages/HomePage/components/MarkdownHeader'
 
 interface VersionNote {
@@ -288,6 +289,7 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
   const [showTranscribe, setShowTranscribe] = useState(false)
   const [showChat, setShowChat] = useState<false | 'half' | 'full'>(false)
   const [viewMode, setViewMode] = useState<'map' | 'preview'>('preview')
+  const [exportProgress, setExportProgress] = useState<{ current: number; total: number } | null>(null)
   const svgRef = useRef<SVGSVGElement>(null)
 
   // 节点点击气泡状态
@@ -369,16 +371,27 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
       URL.revokeObjectURL(url)
     },
   }
-  const handleDownload = () => {
+  const handleDownload = async () => {
     const task = getCurrentTask()
-    const name = task?.audioMeta.title || 'note'
-    const blob = new Blob([selectedContent], { type: 'text/markdown;charset=utf-8' })
-    const link = document.createElement('a')
-    link.href = URL.createObjectURL(blob)
-    link.download = `${name}.md`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
+    if (!task) return
+
+    const name = task?.audioMeta?.title || 'note'
+    const markdown = isMultiVersion
+      ? (task.markdown.find(v => v.ver_id === currentVerId)?.content ?? selectedContent)
+      : selectedContent
+
+    try {
+      setExportProgress({ current: 0, total: 1 })
+      await exportNoteAsZip(markdown, name, baseURL, (current, total) => {
+        setExportProgress({ current, total })
+      })
+      toast.success('导出成功')
+    } catch (err) {
+      console.error('导出失败:', err)
+      toast.error('导出失败，请检查网络连接')
+    } finally {
+      setExportProgress(null)
+    }
   }
 
   // 处理思维导图节点点击
@@ -454,6 +467,7 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
         noteStyles={noteStyles}
         onCopy={handleCopy}
         onDownload={handleDownload}
+        exportProgress={exportProgress}
         createAt={createTime}
         showTranscribe={showTranscribe}
         setShowTranscribe={setShowTranscribe}

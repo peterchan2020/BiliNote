@@ -26,6 +26,7 @@ interface NoteHeaderProps {
   noteStyles: { value: string; label: string }[]
   onCopy: () => void
   onDownload: () => void
+  exportProgress?: { current: number; total: number } | null
   createAt?: string | Date
   setShowTranscribe: (show: boolean) => void
   showChat?: false | 'half' | 'full'
@@ -42,6 +43,7 @@ export function MarkdownHeader({
   noteStyles,
   onCopy,
   onDownload,
+  exportProgress,
   createAt,
   showTranscribe,
   setShowTranscribe,
@@ -161,9 +163,13 @@ export function MarkdownHeader({
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button onClick={onDownload} variant="ghost" size="sm" className="h-8 px-2">
+              <Button onClick={onDownload} variant="ghost" size="sm" className="h-8 px-2" disabled={!!exportProgress}>
                 <Download className="mr-1.5 h-4 w-4" />
-                <span className="text-sm">导出 Markdown</span>
+                <span className="text-sm">
+                  {exportProgress
+                    ? `导出中 ${exportProgress.current}/${exportProgress.total}`
+                    : '导出 Markdown'}
+                </span>
               </Button>
             </TooltipTrigger>
             <TooltipContent>下载为 Markdown 文件</TooltipContent>
