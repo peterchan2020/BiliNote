@@ -34,5 +34,5 @@ export const videoPlatforms = [
   { label: '抖音', value: 'douyin', logo: DouyinLogo },
   { label: '快手', value: 'kuaishou', logo: KuaishouLogo },
   { label: '本地视频', value: 'local', logo: LocalLogo },
-  { label: '本地文档', value: 'local_doc', logo: DocumentLogo },
+  // { label: '本地文档', value: 'local_doc', logo: DocumentLogo },
 ] as const
