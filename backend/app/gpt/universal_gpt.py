@@ -11,6 +11,7 @@ from pathlib import Path
 from app.gpt.prompt import BASE_PROMPT, AI_SUM, SCREENSHOT, LINK, MERGE_PROMPT
 from app.gpt.utils import fix_markdown
 from app.gpt.request_chunker import RequestChunker
+from app.gpt.chunk_processor import ChunkProcessor
 from app.models.transcriber_model import TranscriptSegment
 from datetime import timedelta
 from typing import List
@@ -29,6 +30,9 @@ class UniversalGPT(GPT):
         # 初始化时缓存重试配置，避免每次请求重复读取环境变量
         self._max_retry_attempts = max(1, int(os.getenv("OPENAI_RETRY_ATTEMPTS", "3")))
         self._retry_base_backoff = float(os.getenv("OPENAI_RETRY_BACKOFF_SECONDS", "1.5"))
+        # ChunkProcessor 并发控制
+        self._chunk_max_workers = max(1, int(os.getenv("LLM_CHUNK_MAX_WORKERS", "5")))
+        self._chunk_processor = ChunkProcessor(max_workers=self._chunk_max_workers)
 
     def _format_time(self, seconds: float) -> str:
         return str(timedelta(seconds=int(seconds)))[2:]
@@ -278,26 +282,36 @@ class UniversalGPT(GPT):
         if len(partials) > len(chunks):
             partials = []
 
-        for chunk in chunks[len(partials):]:
-            messages = self.create_messages(
-                chunk.segments,
-                title=source.title,
-                tags=source.tags,
-                video_img_urls=chunk.image_urls,
-                _format=source._format,
-                style=source.style,
-                extras=source.extras
-            )
-            try:
-                response = self._chat_completion_create(messages)
-            except Exception as exc:
-                if checkpoint_key and source_signature:
-                    self._save_checkpoint(checkpoint_key, source_signature, partials, "summarize")
-                raise
+        remaining_chunks = chunks[len(partials):]
+        if remaining_chunks:
+            checkpoint_buf: list[str] = []
 
-            partials.append(response.choices[0].message.content.strip())
-            if checkpoint_key and source_signature:
-                self._save_checkpoint(checkpoint_key, source_signature, partials, "summarize")
+            def process_chunk(chunk):
+                messages = self.create_messages(
+                    chunk.segments,
+                    title=source.title,
+                    tags=source.tags,
+                    video_img_urls=chunk.image_urls,
+                    _format=source._format,
+                    style=source.style,
+                    extras=source.extras
+                )
+                response = self._chat_completion_create(messages)
+                return response.choices[0].message.content.strip()
+
+            def on_chunk_done(idx, result):
+                checkpoint_buf.append(result)
+                if checkpoint_key and source_signature:
+                    ordered = partials + list(checkpoint_buf)
+                    self._save_checkpoint(checkpoint_key, source_signature, ordered, "summarize")
+
+            new_partials = self._chunk_processor.process(
+                remaining_chunks,
+                process_chunk,
+                completed_count=len(partials),
+                on_chunk_done=on_chunk_done,
+            )
+            partials.extend(new_partials)
 
         if len(partials) == 1:
             if checkpoint_key:

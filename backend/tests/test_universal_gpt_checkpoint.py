@@ -53,6 +53,9 @@ def _install_stubs():
 
     request_chunker_mod.RequestChunker = _RequestChunker
 
+    chunk_processor_mod = types.ModuleType("app.gpt.chunk_processor")
+    _load_chunk_processor(chunk_processor_mod)
+
     gpt_model_mod = types.ModuleType("app.models.gpt_model")
 
     class _GPTSource:
@@ -78,8 +81,39 @@ def _install_stubs():
     sys.modules["app.gpt.prompt"] = prompt_mod
     sys.modules["app.gpt.utils"] = utils_mod
     sys.modules["app.gpt.request_chunker"] = request_chunker_mod
+    sys.modules["app.gpt.chunk_processor"] = chunk_processor_mod
     sys.modules["app.models.gpt_model"] = gpt_model_mod
     sys.modules["app.models.transcriber_model"] = transcriber_model_mod
+
+    # 让 import 时能找到包属性
+    if not hasattr(app_mod, "gpt"):
+        app_mod.gpt = gpt_pkg
+    if not hasattr(app_mod, "models"):
+        app_mod.models = models_pkg
+    if not hasattr(gpt_pkg, "request_chunker"):
+        gpt_pkg.request_chunker = request_chunker_mod
+    if not hasattr(gpt_pkg, "chunk_processor"):
+        gpt_pkg.chunk_processor = chunk_processor_mod
+    if not hasattr(gpt_pkg, "base"):
+        gpt_pkg.base = base_mod
+    if not hasattr(gpt_pkg, "prompt_builder"):
+        gpt_pkg.prompt_builder = prompt_builder_mod
+    if not hasattr(gpt_pkg, "prompt"):
+        gpt_pkg.prompt = prompt_mod
+    if not hasattr(gpt_pkg, "utils"):
+        gpt_pkg.utils = utils_mod
+    if not hasattr(models_pkg, "gpt_model"):
+        models_pkg.gpt_model = gpt_model_mod
+    if not hasattr(models_pkg, "transcriber_model"):
+        models_pkg.transcriber_model = transcriber_model_mod
+
+
+def _load_chunk_processor(mod):
+    ROOT = pathlib.Path(__file__).resolve().parents[1]
+    module_path = ROOT / "app" / "gpt" / "chunk_processor.py"
+    spec = importlib.util.spec_from_file_location("app.gpt.chunk_processor", module_path)
+    if spec and spec.loader:
+        spec.loader.exec_module(mod)
 
 
 def _load_universal_gpt_class():
