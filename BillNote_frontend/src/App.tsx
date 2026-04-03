@@ -7,6 +7,7 @@ import { systemCheck } from '@/services/system.ts'
 import BackendInitDialog from '@/components/BackendInitDialog'
 import Index from '@/pages/Index.tsx'
 import { HomePage } from './pages/HomePage/Home.tsx'
+import { ErrorBoundary } from './components/ErrorBoundary'
 
 // 非首屏页面使用 React.lazy 按需加载
 const SettingPage = lazy(() => import('./pages/SettingPage/index.tsx'))
@@ -17,6 +18,7 @@ const Monitor = lazy(() => import('@/pages/SettingPage/Monitor.tsx'))
 const Downloader = lazy(() => import('@/pages/SettingPage/Downloader.tsx'))
 const DownloaderForm = lazy(() => import('@/components/Form/DownloaderForm/Form.tsx'))
 const TranscriberPage = lazy(() => import('@/pages/SettingPage/transcriber.tsx'))
+const MineruPage = lazy(() => import('@/pages/SettingPage/Mineru.tsx'))
 const NotFoundPage = lazy(() => import('@/pages/NotFoundPage'))
 
 function App() {
@@ -43,8 +45,9 @@ function App() {
   return (
     <>
       <BrowserRouter>
-        <Suspense fallback={<div className="flex h-screen items-center justify-center">加载中…</div>}>
-          <Routes>
+        <ErrorBoundary>
+          <Suspense fallback={<div className="flex h-screen items-center justify-center">加载中…</div>}>
+            <Routes>
             <Route path="/" element={<Index />}>
               <Route index element={<HomePage />} />
               <Route path="settings" element={<SettingPage />}>
@@ -57,6 +60,7 @@ function App() {
                   <Route path=":id" element={<DownloaderForm />} />
                 </Route>
                 <Route path="transcriber" element={<TranscriberPage />} />
+                <Route path="mineru" element={<MineruPage />} />
                 <Route path="monitor" element={<Monitor />}></Route>
                 <Route path="about" element={<AboutPage />}></Route>
                 <Route path="*" element={<NotFoundPage />} />
@@ -64,7 +68,8 @@ function App() {
               <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>
-        </Suspense>
+          </Suspense>
+        </ErrorBoundary>
       </BrowserRouter>
     </>
   )

@@ -38,9 +38,16 @@ import { Input } from '@/components/ui/input.tsx'
 import { Textarea } from '@/components/ui/textarea.tsx'
 import { noteStyles, noteFormats, videoPlatforms } from '@/constant/note.ts'
 import { fetchModels } from '@/services/model.ts'
+import { startMinerUParse } from '@/services/mineru'
+import { useMinerUStore } from '@/store/mineruStore'
 import { useNavigate } from 'react-router-dom'
+import toast from 'react-hot-toast'
 
 /* -------------------- 校验 Schema -------------------- */
+const DOCUMENT_MAX_SIZE = 100 * 1024 * 1024 // 100MB，与后端 mineru_service.MAX_FILE_SIZE 保持一致
+const DOCUMENT_SUPPORTED_TYPES = ['application/pdf']
+const DOCUMENT_UNSUPPORTED = ['text/markdown', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'application/msword']
+
 const formSchema = z
   .object({
     video_url: z.string().optional(),
@@ -63,6 +70,12 @@ const formSchema = z
     if (platform === 'local') {
       if (!video_url) {
         ctx.addIssue({ code: 'custom', message: '本地视频路径不能为空', path: ['video_url'] })
+      }
+    }
+    else if (platform === 'local_doc') {
+      // local_doc uses file upload, not URL validation - video_url holds mineru:task_id after upload
+      if (!video_url) {
+        ctx.addIssue({ code: 'custom', message: '请先上传文档', path: ['video_url'] })
       }
     }
     else {
@@ -131,6 +144,9 @@ const NoteForm = () => {
   const navigate = useNavigate();
   const [isUploading, setIsUploading] = useState(false)
   const [uploadSuccess, setUploadSuccess] = useState(false)
+  const [selectedLocalFile, setSelectedLocalFile] = useState<File | null>(null)
+  const mineruBaseUrl = useMinerUStore(state => state.baseUrl)
+  const mineruApiKey = useMinerUStore(state => state.apiKey)
   /* ---- 全局状态 ---- */
   const { addPendingTask, currentTaskId, setCurrentTask, getCurrentTask, retryTask } =
     useTaskStore()
@@ -165,11 +181,20 @@ const NoteForm = () => {
 
     return
   }, [])
+
+  // 监听 currentTaskId 变化：当任务被删除时，清除文档状态并重置表单
+  useEffect(() => {
+    if (currentTaskId === null && selectedLocalFile) {
+      // 任务被删除（currentTaskId 变为 null），清除本地文件状态
+      setSelectedLocalFile(null)
+      setUploadSuccess(false)
+      // 重置 video_url 为空
+      form.setValue('video_url', '')
+    }
+  }, [currentTaskId])
   useEffect(() => {
     if (!currentTask) return
     const { formData } = currentTask
-
-    console.log('currentTask.formData.platform:', formData.platform)
 
     form.reset({
       platform: formData.platform || 'bilibili',
@@ -204,32 +229,87 @@ const NoteForm = () => {
     setUploadSuccess(false)
 
     try {
-  
-      const  data  = await uploadFile(formData)
+      if (platform === 'local_doc') {
+        // Document upload → only upload to backend storage (NOT MinerU parse)
+        // MinerU parse will be triggered when user clicks "生成笔记"
+        if (!DOCUMENT_SUPPORTED_TYPES.includes(file.type)) {
+          toast.error('仅支持 PDF 文件')
+          return
+        }
+        if (file.size > DOCUMENT_MAX_SIZE) {
+          toast.error(`文件过大，最大 ${DOCUMENT_MAX_SIZE / 1024 / 1024}MB`)
+          return
+        }
+        // Store File object for later use in onSubmit (for MinerU parse)
+        setSelectedLocalFile(file)
+        // Upload to backend storage (NOT MinerU)
+        const data = await uploadFile(formData)
         cb(data.url)
         setUploadSuccess(true)
+      } else {
+        // Video upload → existing logic
+        const data = await uploadFile(formData)
+        cb(data.url)
+        setUploadSuccess(true)
+      }
     } catch (err) {
-      console.error('上传失败:', err)
-      // message.error('上传失败，请重试')
+      toast.error('上传失败')
     } finally {
       setIsUploading(false)
     }
   }
 
   const onSubmit = async (values: NoteFormValues) => {
-    console.log('Not even go here')
     const payload: NoteFormValues = {
       ...values,
       provider_id: modelList.find(m => m.model_name === values.model_name)!.provider_id,
       task_id: currentTaskId || '',
     }
+
+    // local_doc: trigger MinerU parse when user clicks "生成笔记"
+    // Upload step (handleFileUpload) only stores file to backend, not MinerU
+    if (values.platform === 'local_doc') {
+      // Retry case: re-submit to MinerU for re-parsing
+      if (currentTaskId) {
+        if (!selectedLocalFile) {
+          toast.error('请先上传文档')
+          return
+        }
+        try {
+          toast.loading('正在重新解析文档...')
+          const result = await startMinerUParse(selectedLocalFile, mineruBaseUrl, mineruApiKey)
+          toast.dismiss()
+          addPendingTask(result.task_id, values.platform, payload)
+        } catch (err) {
+          toast.dismiss()
+          toast.error('重新解析失败')
+        }
+        return
+      }
+
+      // New task case
+      if (!selectedLocalFile) {
+        toast.error('请先上传文档')
+        return
+      }
+      try {
+        toast.loading('正在解析文档...')
+        const result = await startMinerUParse(selectedLocalFile, mineruBaseUrl, mineruApiKey)
+        toast.dismiss()
+        addPendingTask(result.task_id, values.platform, payload)
+      } catch (err) {
+        toast.dismiss()
+        toast.error('启动解析失败')
+      }
+      return
+    }
+
     if (currentTaskId) {
       retryTask(currentTaskId, payload)
       return
     }
 
-    // message.success('已提交任务')
-    const  data  = await generateNote(payload)
+    const data = await generateNote(payload)
     addPendingTask(data.task_id, values.platform, payload)
   }
   const onInvalid = (errors: FieldErrors<NoteFormValues>) => {
@@ -273,8 +353,8 @@ const NoteForm = () => {
           {/* 顶部按钮 */}
           <FormButton></FormButton>
 
-          {/* 视频链接 & 平台 */}
-          <SectionHeader title="视频链接" tip="支持 B 站、YouTube 等平台" />
+          {/* 视频/文档链接 & 平台 */}
+          <SectionHeader title="视频/文档链接" tip="支持 B 站、YouTube 等平台和本地文档" />
           <div className="flex gap-2">
             {/* 平台选择 */}
 
@@ -316,9 +396,14 @@ const NoteForm = () => {
               render={({ field }) => (
                 <FormItem className="flex-1">
                   {platform === 'local' ? (
-                    <>
-                      <Input disabled={!!editing} placeholder="请输入本地视频路径" {...field} />
-                    </>
+                    <Input disabled={!!editing} placeholder="请输入本地视频路径" {...field} />
+                  ) : platform === 'local_doc' ? (
+                    <Input
+                      disabled
+                      placeholder={field.value ? '文档已上传' : '请上传文档（无需输入 URL）'}
+                      value={field.value?.startsWith('mineru:') ? '文档已上传，请直接点击生成' : field.value || ''}
+                      {...field}
+                    />
                   ) : (
                     <Input disabled={!!editing} placeholder="请输入视频网站链接" {...field} />
                   )}
@@ -333,7 +418,7 @@ const NoteForm = () => {
             name="video_url"
             render={({ field }) => (
               <FormItem className="flex-1">
-                {platform === 'local' && (
+                {(platform === 'local' || platform === 'local_doc') && (
                   <>
                     <div
                       className="hover:border-primary mt-2 flex h-40 cursor-pointer items-center justify-center rounded-md border-2 border-dashed border-gray-300 transition-colors"
@@ -349,7 +434,7 @@ const NoteForm = () => {
                       onClick={() => {
                         const input = document.createElement('input')
                         input.type = 'file'
-                        input.accept = 'video/*'
+                        input.accept = platform === 'local_doc' ? '.pdf' : 'video/*'
                         input.onchange = e => {
                           const file = (e.target as HTMLInputElement).files?.[0]
                           if (file) handleFileUpload(file, field.onChange)
@@ -361,6 +446,11 @@ const NoteForm = () => {
                         <p className="text-center text-sm text-blue-500">上传中，请稍候…</p>
                       ) : uploadSuccess ? (
                         <p className="text-center text-sm text-green-500">上传成功！</p>
+                      ) : platform === 'local_doc' ? (
+                        <div className="text-center text-sm text-gray-500">
+                          <p>拖拽 PDF 文件到这里上传</p>
+                          <p className="text-xs text-gray-400">最大 100MB, 500页</p>
+                        </div>
                       ) : (
                         <p className="text-center text-sm text-gray-500">
                           拖拽文件到这里上传 <br />
@@ -464,6 +554,7 @@ const NoteForm = () => {
                     <Checkbox
                       checked={videoUnderstandingEnabled}
                       onCheckedChange={v => form.setValue('video_understanding', v)}
+                      disabled={platform === 'local_doc'}
                     />
                   </div>
                   <FormMessage />
@@ -531,8 +622,8 @@ const NoteForm = () => {
                   value={field.value}
                   onChange={field.onChange}
                   disabledMap={{
-                    link: platform === 'local',
-                    screenshot: !videoUnderstandingEnabled,
+                    link: platform === 'local' || platform === 'local_doc',
+                    screenshot: !videoUnderstandingEnabled || platform === 'local_doc',
                   }}
                 />
                 <FormMessage />

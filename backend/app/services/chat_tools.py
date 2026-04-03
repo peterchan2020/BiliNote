@@ -178,7 +178,13 @@ def _get_note_content(data: dict) -> str:
     if isinstance(md, list):
         # 多版本，取最新
         md = md[-1].get("content", "") if md else ""
-    # 限制长度
-    if len(md) > 5000:
-        md = md[:5000] + "\n\n... (内容过长已截断)"
+
+    # 增加限制长度以保留更多内容，优先保留开头和结尾
+    max_len = 8000
+    if len(md) > max_len:
+        # 保留前 70% 和后 30%，确保关键信息不被截断
+        head_len = int(max_len * 0.7)
+        tail_len = max_len - head_len
+        md = md[:head_len] + f"\n\n[... 内容截断，中间省略约 {len(md) - max_len} 字符 ...]\n\n" + md[-tail_len:]
+
     return json.dumps({"markdown": md}, ensure_ascii=False)

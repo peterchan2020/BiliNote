@@ -12,11 +12,13 @@ router = APIRouter()
 
 #  新增 type 字段
 class ProviderRequest(BaseModel):
+    id: Optional[str] = None
     name: str
     api_key: str
     base_url: str
     logo: Optional[str] = None
     type: str
+    enabled: Optional[int] = 1
 
 class TestRequest(BaseModel):
     id: str
@@ -33,11 +35,13 @@ class ProviderUpdateRequest(BaseModel):
 def add_provider(data: ProviderRequest):
     try:
         res = ProviderService.add_provider(
+            id=data.id,
             name=data.name,
             api_key=data.api_key,
             base_url=data.base_url,
             logo=data.logo,
-            type_=data.type
+            type_=data.type,
+            enabled=data.enabled
         )
         return R.success(msg='添加模型供应商成功',data=res)
     except Exception as e:

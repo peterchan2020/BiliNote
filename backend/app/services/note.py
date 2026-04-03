@@ -36,6 +36,9 @@ from app.utils.screenshot_marker import extract_screenshot_timestamps
 from app.utils.status_code import StatusCode
 from app.utils.video_helper import generate_screenshot
 from app.utils.video_reader import VideoReader
+from app.utils.knowledge_graph_helper import split_knowledge_graph, validate_kg_depth, truncate_kg_by_depth, parse_kg_node, build_kg_tree
+from app.utils.kg_detailed_notes import DetailedNotesGenerator, DetailedNotesConfig
+from app.utils.segment_aligner import SegmentAligner
 
 # ------------------ 环境变量与全局配置 ------------------
 
@@ -119,6 +122,13 @@ class NoteGenerator:
         """
         if grid_size is None:
             grid_size = []
+
+        # local_doc 由 MinerU 处理，不走笔记生成流程
+        if platform == 'local_doc':
+            raise NoteError(
+                code=NoteErrorEnum.PLATFORM_NOT_SUPPORTED.code,
+                message="local_doc 平台由 MinerU 单独处理，请勿调用笔记生成接口"
+            )
 
         try:
             logger.info(f"开始生成笔记 (task_id={task_id})")
@@ -225,14 +235,75 @@ class NoteGenerator:
 
             markdown = prepend_source_link(markdown, str(video_url))
 
-            # 5. 保存记录到数据库
+            # 5. 分离知识图谱
+            knowledge_graph = None
+            knowledge_graph_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_knowledge_graph.md"
+            markdown, knowledge_graph = split_knowledge_graph(markdown)
+
+            # 验证知识图谱深度
+            kg_warning = None
+            if knowledge_graph:
+                is_valid, max_depth, exceeded_nodes = validate_kg_depth(knowledge_graph)
+                if not is_valid:
+                    kg_warning = f"知识图谱深度超限({max_depth}层)，已截断超深部分"
+                    logger.warning(f"task_id={task_id}: {kg_warning}")
+                    knowledge_graph = truncate_kg_by_depth(knowledge_graph)
+
+            # 重新保存分离后的纯笔记 markdown
+            markdown_cache_file.write_text(markdown, encoding="utf-8")
+            logger.info(f"分离后的笔记已保存 ({markdown_cache_file})")
+
+            # 保存知识图谱（如果存在）
+            if knowledge_graph:
+                knowledge_graph_cache_file.write_text(knowledge_graph, encoding="utf-8")
+                logger.info(f"知识图谱已保存 ({knowledge_graph_cache_file})")
+
+            # 详细笔记生成（仅当知识点图谱风格时触发）
+            detailed_notes = None
+            if style == 'knowledge_graph':
+                logger.info(f"开始生成详细笔记 (task_id={task_id})")
+                try:
+                    if knowledge_graph:
+                        # 解析知识图谱节点并构建树结构
+                        kg_tree = build_kg_tree(knowledge_graph)
+                        # build_kg_tree返回[根节点]，根节点的children是顶级章节列表
+                        kg_nodes = kg_tree[0]['children'] if (kg_tree and kg_tree[0].get('children')) else kg_tree
+
+                        # 时间段对齐
+                        aligner = SegmentAligner()
+                        aligned_nodes = aligner.align(kg_nodes, transcript)
+
+                        # 生成详细笔记
+                        config = DetailedNotesConfig(
+                            chapter_min_words=300,
+                            leaf_min_words=200,
+                        )
+                        notes_gen = DetailedNotesGenerator(gpt, transcript, config)
+                        gen_result = notes_gen.generate(aligned_nodes)
+
+                        detailed_notes = gen_result.markdown
+                        logger.info(f"详细笔记生成成功，LLM调用次数: {gen_result.llm_call_count}")
+                    else:
+                        logger.warning(f"未找到知识图谱内容，跳过详细笔记生成")
+                except Exception as e:
+                    logger.error(f"详细笔记生成失败: {e}")
+                    # 详细笔记生成失败不影响主流程
+
+            # 6. 保存记录到数据库
             self._update_status(task_id, TaskStatus.SAVING)
             self._save_metadata(video_id=audio_meta.video_id, platform=platform, task_id=task_id)
 
-            # 6. 完成
+            # 7. 完成
             self._update_status(task_id, TaskStatus.SUCCESS)
             logger.info(f"笔记生成成功 (task_id={task_id})")
-            return NoteResult(markdown=markdown, transcript=transcript, audio_meta=audio_meta)
+            return NoteResult(
+                markdown=detailed_notes if detailed_notes else markdown,  # 详细笔记替换原笔记
+                transcript=transcript,
+                audio_meta=audio_meta,
+                knowledge_graph=knowledge_graph,
+                kg_warning=kg_warning,
+                detailed_notes=detailed_notes,
+            )
 
         except Exception as exc:
             logger.error(f"生成笔记流程异常 (task_id={task_id})：{exc}", exc_info=True)
@@ -290,23 +361,17 @@ class NoteGenerator:
         根据平台名称获取对应的下载器实例
 
         :param platform: 平台标识，需在 SUPPORT_PLATFORM_MAP 中
-        :return: 对应的 Downloader 子类实例
+        :return: 对应的 Downloader 子类
         """
         downloader_cls = SUPPORT_PLATFORM_MAP.get(platform)
         logger.debug(f"实例化下载器 -  {platform}")
-        instance = None
         if not downloader_cls:
             logger.error(f"不支持的平台：{platform}")
             raise NoteError(code=NoteErrorEnum.PLATFORM_NOT_SUPPORTED.code,
                             message=NoteErrorEnum.PLATFORM_NOT_SUPPORTED.message)
-        try:
-            instance = downloader_cls
-        except Exception as e:
-            logger.error(f"实例化下载器失败：{e}")
 
-
-        logger.info(f"使用下载器：{downloader_cls.__class__}")
-        return instance
+        logger.info(f"使用下载器：{downloader_cls.__class__.__name__}")
+        return downloader_cls
 
     def _update_status(self, task_id: Optional[str], status: Union[str, TaskStatus], message: Optional[str] = None):
         """
@@ -321,7 +386,7 @@ class NoteGenerator:
 
         NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         status_file = NOTE_OUTPUT_DIR / f"{task_id}.status.json"
-        print(f"写入状态文件: {status_file} 当前状态: {status}")
+        logger.debug(f"写入状态文件: {status_file} 当前状态: {status}")
         data = {"status": status.value if isinstance(status, TaskStatus) else status}
         if message:
             data["message"] = message
@@ -337,7 +402,7 @@ class NoteGenerator:
             # Atomic rename operation
             temp_file.replace(status_file)
 
-            print(f"状态文件写入成功: {status_file}")
+            logger.debug(f"状态文件写入成功: {status_file}")
         except Exception as e:
             logger.error(f"写入状态文件失败 (task_id={task_id})：{e}")
             # Try to write error to file directly as fallback
@@ -428,6 +493,8 @@ class NoteGenerator:
             grid_size = [2, 2]
 
         frame_interval = video_interval if video_interval and video_interval > 0 else 6
+        # 当 video_interval 为 0 或未设置时，启用场景检测采样
+        use_scene_detection = not (video_interval and video_interval > 0)
         if need_video:
             try:
                 logger.info("开始下载视频")
@@ -443,6 +510,8 @@ class NoteGenerator:
                         unit_width=960,
                         unit_height=540,
                         save_quality=80,
+                        use_scene_detection=use_scene_detection,
+                        max_scene_frames=grid_size[0] * grid_size[1] * 4,
                     ).run()
                 else:
                     logger.info("未指定 grid_size，跳过缩略图生成")
@@ -650,7 +719,7 @@ class NoteGenerator:
 
         return markdown
 
-    def _insert_screenshots(self, markdown: str, video_path: Path) -> str | None | Any:
+    def _insert_screenshots(self, markdown: str, video_path: Path) -> str:
         """
         扫描 Markdown 文本中所有 Screenshot 标记，并替换为实际生成的截图链接。
 
@@ -659,6 +728,11 @@ class NoteGenerator:
         :return: 替换后的 Markdown 字符串
         """
         matches: List[Tuple[str, int]] = extract_screenshot_timestamps(markdown)
+        if not matches:
+            logger.info("未找到任何 Screenshot 标记，跳过截图插入")
+            return markdown
+        logger.info(f"找到 {len(matches)} 个 Screenshot 标记，开始替换")
+        replaced_count = 0
         for idx, (marker, ts) in enumerate(matches):
             try:
                 img_path = generate_screenshot(str(video_path), str(IMAGE_OUTPUT_DIR), ts, idx)
@@ -666,10 +740,12 @@ class NoteGenerator:
                 # 构建前端可访问的 URL，例如 /static/screenshots/{filename}
                 img_url = f"{IMAGE_BASE_URL.rstrip('/')}/{filename}"
                 markdown = markdown.replace(marker, f"![]({img_url})", 1)
+                replaced_count += 1
+                logger.info(f"截图替换成功: {marker} -> {img_url}")
             except Exception as exc:
-                logger.error(f"生成截图失败 (timestamp={ts})：{exc}")
-                # self._handle_exception(task_id, exc)
-                return None
+                logger.warning(f"生成截图失败 (timestamp={ts})，跳过该标记：{exc}")
+                continue
+        logger.info(f"截图替换完成: {replaced_count}/{len(matches)} 个成功")
         return markdown
 
     @staticmethod

@@ -141,6 +141,37 @@ export const YoutubeLogo = () => {
   )
 }
 
+export const DocumentLogo = () => {
+  return (
+    <svg
+      t="1746696617517"
+      className="icon"
+      viewBox="0 0 1024 1024"
+      version="1.1"
+      xmlns="http://www.w3.org/2000/svg"
+      p-id="6795"
+      width="200"
+      height="200"
+    >
+      <path
+        d="M896 192H128c-17.664 0-32 14.336-32 32v640c0 17.664 14.336 32 32 32h768c17.664 0 32-14.336 32-32V224c0-17.664-14.336-32-32-32z"
+        fill="#FFC25C"
+        p-id="6796"
+      />
+      <path
+        d="M896 128L544 128 544 64c0-17.664-14.336-32-32-32H192c-17.664 0-32 14.336-32 32v896c0 17.664 14.336 32 32 32h640c17.664 0 32-14.336 32-32V160c0-17.664-14.336-32-32-32z"
+        fill="#FFFFFF"
+        p-id="6797"
+      />
+      <path
+        d="M640 192L384 192 384 128 576 128 896 448 896 192 640 192z"
+        fill="#FFC25C"
+        p-id="6798"
+      />
+    </svg>
+  )
+}
+
 export const LocalLogo = () => {
   return (
     <svg

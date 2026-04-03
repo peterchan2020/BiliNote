@@ -1,9 +1,11 @@
 import base64
 import hashlib
 import os
+import platform
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional
 import ffmpeg
 from PIL import Image, ImageDraw, ImageFont
 
@@ -20,9 +22,20 @@ class VideoReader:
                  unit_width=960,
                  unit_height=540,
                  save_quality=90,
-                 font_path="fonts/arial.ttf",
+                 font_path: Optional[str] = None,
                  frame_dir=None,
-                 grid_dir=None):
+                 grid_dir=None,
+                 use_scene_detection=False,
+                 max_scene_frames=36):
+        # Use system font path if not provided, fallback to a common location
+        if font_path is None:
+            system = platform.system()
+            if system == "Windows":
+                font_path = "C:\\Windows\\Fonts\\arial.ttf"
+            elif system == "Darwin":
+                font_path = "/System/Library/Fonts/Helvetica.ttc"
+            else:
+                font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
         self.video_path = video_path
         self.grid_size = grid_size
         self.frame_interval = frame_interval
@@ -32,12 +45,15 @@ class VideoReader:
         self.save_quality = save_quality
         self.frame_dir = frame_dir or get_app_dir("output_frames")
         self.grid_dir = grid_dir or get_app_dir("grid_output")
-        print(f"视频路径：{video_path}",self.frame_dir,self.grid_dir)
+        self.use_scene_detection = use_scene_detection
+        self.max_scene_frames = max_scene_frames
+        logger.debug(f"VideoReader 初始化: video_path={video_path}, frame_dir={self.frame_dir}, grid_dir={self.grid_dir}")
         self.font_path = font_path
 
     @staticmethod
-    def _calculate_file_md5(file_path: str) -> str:
-        hasher = hashlib.md5()
+    def _calculate_file_hash(file_path: str) -> str:
+        """Calculate SHA256 hash of file for deduplication."""
+        hasher = hashlib.sha256()
         with open(file_path, "rb") as f:
             for chunk in iter(lambda: f.read(8192), b""):
                 hasher.update(chunk)
@@ -59,16 +75,65 @@ class VideoReader:
         """提取单帧，返回输出路径或 None（失败时）。"""
         time_label = self.format_time(ts)
         output_path = os.path.join(self.frame_dir, f"frame_{time_label}.jpg")
-        cmd = ["ffmpeg", "-ss", str(ts), "-i", self.video_path, "-frames:v", "1", "-q:v", "2", "-y", output_path,
-               "-hide_banner", "-loglevel", "error"]
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", str(ts), "-i", self.video_path, "-frames:v", "1", "-q:v", "2", "-y", output_path]
         try:
             subprocess.run(cmd, check=True)
             return output_path
         except subprocess.CalledProcessError:
             return None
 
-    def extract_frames(self, max_frames=1000) -> list[str]:
+    def _extract_frames_at_timestamps(self, timestamps: list[int]) -> list[str]:
+        """在指定时间戳列表提取帧"""
+        os.makedirs(self.frame_dir, exist_ok=True)
 
+        # 并行提取帧
+        max_workers = min(os.cpu_count() or 4, 8, len(timestamps))
+        frame_results: dict[int, str | None] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(self._extract_single_frame, ts): ts for ts in timestamps}
+            for future in as_completed(futures):
+                ts = futures[future]
+                frame_results[ts] = future.result()
+
+        # 按时间戳顺序整理结果
+        image_paths = []
+        for ts in sorted(timestamps):
+            output_path = frame_results.get(ts)
+            if output_path and os.path.exists(output_path):
+                image_paths.append(output_path)
+
+        return image_paths
+
+    def _extract_frames_scene_based(self, max_frames: int) -> list[str]:
+        """
+        基于场景检测提取帧（使用 PySceneDetect）
+
+        Args:
+            max_frames: 最大提取帧数
+
+        Returns:
+            list[str]: 提取的帧文件路径列表
+        """
+        try:
+            from app.utils.scene_detector import SceneDetector
+
+            logger.info("开始使用场景检测提取关键帧...")
+
+            with SceneDetector(self.video_path) as detector:
+                timestamps = detector.get_keyframe_timestamps(max_frames=max_frames)
+                scene_count = detector.get_scene_count()
+                logger.info(f"场景检测完成，检测到 {scene_count} 个场景，提取 {len(timestamps)} 个关键帧")
+
+            return self._extract_frames_at_timestamps(timestamps)
+        except ImportError:
+            logger.warning("PySceneDetect 未安装，回退到固定间隔采样")
+            return self._extract_frames_fixed_interval(max_frames)
+        except Exception as e:
+            logger.warning(f"场景检测失败: {e}，回退到固定间隔采样")
+            return self._extract_frames_fixed_interval(max_frames)
+
+    def _extract_frames_fixed_interval(self, max_frames: int) -> list[str]:
+        """原有的固定间隔采样逻辑"""
         try:
             os.makedirs(self.frame_dir, exist_ok=True)
             duration = float(ffmpeg.probe(self.video_path)["format"]["duration"])
@@ -92,7 +157,7 @@ class VideoReader:
                     continue
 
                 if self.dedupe_enabled:
-                    frame_hash = self._calculate_file_md5(output_path)
+                    frame_hash = self._calculate_file_hash(output_path)
                     if frame_hash == last_hash:
                         os.remove(output_path)
                         continue
@@ -103,6 +168,17 @@ class VideoReader:
         except Exception as e:
             logger.error(f"分割帧发生错误：{str(e)}")
             raise ValueError("视频处理失败")
+
+    def extract_frames(self, max_frames=1000) -> list[str]:
+        """
+        提取视频帧
+
+        当 use_scene_detection=True 时使用场景检测，否则使用固定间隔采样
+        """
+        if self.use_scene_detection:
+            return self._extract_frames_scene_based(max_frames)
+        else:
+            return self._extract_frames_fixed_interval(max_frames)
 
     def group_images(self) -> list[list[str]]:
         image_files = [os.path.join(self.frame_dir, f) for f in os.listdir(self.frame_dir) if
@@ -148,21 +224,17 @@ class VideoReader:
         logger.info("开始提取视频帧...")
         try:
             # 确保目录存在
-            print(self.frame_dir,self.grid_dir)
             os.makedirs(self.frame_dir, exist_ok=True)
             os.makedirs(self.grid_dir, exist_ok=True)
             #清空帧文件夹
             for file in os.listdir(self.frame_dir):
                 if file.startswith("frame_"):
                     os.remove(os.path.join(self.frame_dir, file))
-            print(self.frame_dir,self.grid_dir)
             #清空网格文件夹
             for file in os.listdir(self.grid_dir):
                 if file.startswith("grid_"):
                     os.remove(os.path.join(self.grid_dir, file))
-            print(self.frame_dir,self.grid_dir)
             self.extract_frames()
-            print("2#3",self.frame_dir,self.grid_dir)
             logger.info("开始拼接网格图...")
             image_paths = []
             groups = self.group_images()

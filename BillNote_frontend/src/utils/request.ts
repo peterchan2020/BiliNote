@@ -11,7 +11,9 @@ export interface IResponse<T = any> {
 // 模拟一个消息提示函数 (实际项目中会使用UI库的组件，如 Ant Design 的 message 或 Element UI 的 ElMessage)
 // This function simulates a message display (in real projects, you'd use a UI library's component)
 
-const baseURL = import.meta.env.VITE_API_BASE_URL;
+const baseURL = import.meta.env.VITE_API_BASE_URL
+  ? import.meta.env.VITE_API_BASE_URL + '/api'
+  : '/api';
 
 // 创建实例
  const request: AxiosInstance = axios.create({

@@ -44,6 +44,7 @@ export interface Task {
   status: TaskStatus
   audioMeta: AudioMeta
   createdAt: string
+  knowledge_graph?: string // 知识图谱数据，可选字段
   formData: {
     video_url: string
     link: undefined | boolean
@@ -164,10 +165,33 @@ export const useTaskStore = create<TaskStore>()(
           return
         }
         const task = get().tasks.find(task => task.id === id)
-        console.log('retry',task)
         if (!task) return
 
         const newFormData = payload || task.formData
+
+        // local_doc tasks are handled by MinerU polling, not generateNote
+        if (newFormData.platform === 'local_doc') {
+          if (!newFormData.video_url || !newFormData.video_url.startsWith('mineru:')) {
+            toast.error('请先上传文档')
+            return
+          }
+          const mineruTaskId = newFormData.video_url.replace('mineru:', '')
+          // Re-add to polling queue
+          set(state => ({
+            tasks: state.tasks.map(t =>
+                t.id === id
+                    ? {
+                      ...t,
+                      formData: newFormData,
+                      status: 'PENDING',
+                    }
+                    : t
+            ),
+          }))
+          toast.success('任务已重新提交')
+          return
+        }
+
         await generateNote({
           ...newFormData,
           task_id: id,

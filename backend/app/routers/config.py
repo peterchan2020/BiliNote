@@ -1,7 +1,9 @@
 import os
 import platform
+import uuid
 from pathlib import Path
 
+import requests
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional
@@ -45,6 +47,18 @@ def update_cookie(data: CookieUpdateRequest):
 class TranscriberConfigRequest(BaseModel):
     transcriber_type: str
     whisper_model_size: Optional[str] = None
+    doubao_app_key: Optional[str] = None
+    doubao_api_key: Optional[str] = None
+    aliyun_api_key: Optional[str] = None
+
+
+class DoubaoTestRequest(BaseModel):
+    doubao_app_key: str
+    doubao_api_key: str
+
+
+class AliyunTestRequest(BaseModel):
+    aliyun_api_key: str
 
 
 AVAILABLE_TRANSCRIBER_TYPES = [
@@ -52,6 +66,7 @@ AVAILABLE_TRANSCRIBER_TYPES = [
     {"value": "bcut", "label": "必剪（在线）"},
     {"value": "kuaishou", "label": "快手（在线）"},
     {"value": "groq", "label": "Groq（在线）"},
+    {"value": "aliyun-asr", "label": "阿里云 Fun-ASR（在线）"},
     {"value": "mlx-whisper", "label": "MLX Whisper（仅macOS）"},
 ]
 
@@ -76,8 +91,110 @@ def update_transcriber_config(data: TranscriberConfigRequest):
     config = transcriber_config_manager.update_config(
         transcriber_type=data.transcriber_type,
         whisper_model_size=data.whisper_model_size,
+        doubao_app_key=data.doubao_app_key,
+        doubao_api_key=data.doubao_api_key,
+        aliyun_api_key=data.aliyun_api_key,
     )
     return R.success(data=config)
+
+
+@router.post("/doubao_test")
+def test_doubao_connection(data: DoubaoTestRequest):
+    """测试豆包 API 连接是否有效。"""
+    if not data.doubao_app_key or not data.doubao_api_key:
+        return R.error(msg="App Key 和 API Key 不能为空")
+
+    try:
+        # 使用 submit 接口测试认证，提交一个示例音频 URL
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": data.doubao_api_key,
+            "X-Api-Resource-Id": "volc.seedasr.auc",
+            "X-Api-Request-Id": str(uuid.uuid4()),
+            "X-Api-Sequence": "-1",
+        }
+
+        # 用一个公开的短音频 URL 测试
+        payload = {
+            "user": {"uid": "bilinote_test"},
+            "audio": {
+                "url": "https://lf3-static.bytednsdoc.com/obj/eden-cn/lm_hz_ihsph/ljhwZthlaukjlkulzlp/console/bigtts/zh_female_cancan_mars_bigtts.mp3",
+                "format": "mp3",
+                "codec": "raw",
+                "rate": 16000,
+                "bits": 16,
+                "channel": 1,
+            },
+            "request": {
+                "model_name": "bigmodel",
+                "enable_itn": True,
+                "enable_punc": True,
+                "enable_ddc": False,
+                "enable_speaker_info": False,
+                "enable_channel_split": False,
+                "show_utterances": False,
+                "vad_segment": False,
+            }
+        }
+
+        response = requests.post(
+            "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit",
+            json=payload,
+            headers=headers,
+            timeout=15,
+        )
+
+        status_code = response.headers.get("X-Api-Status-Code", "")
+        if status_code == "45000000" or response.status_code == 401:
+            return R.error(msg="认证失败，请检查 API Key 和 App Key 是否正确")
+
+        if status_code == "20000000":
+            return R.success(msg="连接成功，API 密钥有效")
+
+        # 其他情况说明密钥有效但可能有其他问题
+        return R.success(msg=f"连接成功，API 密钥有效（status: {status_code}）")
+
+    except requests.exceptions.Timeout:
+        return R.error(msg="连接超时，请检查网络")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"豆包连接测试失败: {e}")
+        return R.error(msg=f"连接失败: {str(e)}")
+
+
+@router.post("/aliyun_test")
+def test_aliyun_connection(data: AliyunTestRequest):
+    """测试阿里云 Fun-ASR API 连接是否有效。"""
+    if not data.aliyun_api_key:
+        return R.error(msg="API Key 不能为空")
+
+    try:
+        import dashscope
+        from dashscope.audio.asr import Transcription
+        from http import HTTPStatus
+
+        dashscope.base_http_api_url = "https://dashscope.aliyuncs.com/api/v1"
+        dashscope.api_key = data.aliyun_api_key
+
+        # 用一个公开的短音频 URL 测试（阿里云官方示例音频）
+        sample_url = "https://dashscope.oss-cn-beijing.aliyuncs.com/samples/audio/paraformer/hello_world_female2.wav"
+        task_resp = Transcription.async_call(model="fun-asr", file_urls=[sample_url])
+        task_id = task_resp.output.task_id
+
+        # 轮询最多 60 秒
+        import time
+        start = time.time()
+        while time.time() - start < 60:
+            resp = Transcription.fetch(task=task_id)
+            if resp.output.task_status == "SUCCEEDED":
+                return R.success(msg="连接成功，API Key 有效")
+            if resp.output.task_status == "FAILED":
+                return R.error(msg=f"任务失败: {resp.output.message}")
+            time.sleep(3)
+
+        return R.error(msg="连接超时，请检查网络")
+    except Exception as e:
+        logger.error(f"阿里云 ASR 连接测试失败: {e}")
+        return R.error(msg=f"连接失败: {str(e)}")
 
 
 # ---- Whisper 模型下载状态 & 下载触发 ----

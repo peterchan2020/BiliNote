@@ -7,6 +7,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, validator, field_validator
 from dataclasses import asdict
 
@@ -77,44 +78,53 @@ def save_note_to_file(task_id: str, note):
 def run_note_task(task_id: str, video_url: str, platform: str, quality: DownloadQuality,
                   link: bool = False, screenshot: bool = False, model_name: str = None, provider_id: str = None,
                   _format: list = None, style: str = None, extras: str = None, video_understanding: bool = False,
-                  video_interval=0, grid_size=[]
+                  video_interval: int = 0, grid_size: Optional[list] = None
                   ):
+    if grid_size is None:
+        grid_size = []
 
     if not model_name or not provider_id:
-        raise HTTPException(status_code=400, detail="请选择模型和提供者")
-
-    def _execute_note_task():
-        return NoteGenerator().generate(
-            video_url=video_url,
-            platform=platform,
-            quality=quality,
-            task_id=task_id,
-            model_name=model_name,
-            provider_id=provider_id,
-            link=link,
-            _format=_format,
-            style=style,
-            extras=extras,
-            screenshot=screenshot,
-            video_understanding=video_understanding,
-            video_interval=video_interval,
-            grid_size=grid_size,
-        )
-
-    logger.info(f"任务进入执行队列 (task_id={task_id})")
-    note = task_serial_executor.run(_execute_note_task)
-    logger.info(f"Note generated: {task_id}")
-    if not note or not note.markdown:
-        logger.warning(f"任务 {task_id} 执行失败，跳过保存")
+        logger.error(f"任务缺少模型或提供者配置 (task_id={task_id})")
+        NoteGenerator()._update_status(task_id, TaskStatus.FAILED, message="请选择模型和提供者")
         return
-    save_note_to_file(task_id, note)
 
-    # 自动建立向量索引（用于 AI 问答），失败不影响笔记生成
     try:
-        from app.services.vector_store import VectorStoreManager
-        VectorStoreManager().index_task(task_id)
+        def _execute_note_task():
+            return NoteGenerator().generate(
+                video_url=video_url,
+                platform=platform,
+                quality=quality,
+                task_id=task_id,
+                model_name=model_name,
+                provider_id=provider_id,
+                link=link,
+                _format=_format,
+                style=style,
+                extras=extras,
+                screenshot=screenshot,
+                video_understanding=video_understanding,
+                video_interval=video_interval,
+                grid_size=grid_size,
+            )
+
+        logger.info(f"任务进入执行队列 (task_id={task_id})")
+        note = task_serial_executor.run(_execute_note_task)
+        logger.info(f"Note generated: {task_id}")
+        if not note or not note.markdown:
+            logger.warning(f"任务 {task_id} 执行失败，跳过保存")
+            return
+        save_note_to_file(task_id, note)
+
+        # TODO: 重新启用向量索引（当前禁用，因 GPU 环境下 VectorStoreManager 初始化会崩溃）
+        # try:
+        #     from app.services.vector_store import VectorStoreManager
+        #     VectorStoreManager().index_task(task_id)
+        # except Exception as e:
+        #     logger.warning(f"向量索引失败（不影响笔记）: {e}")
+
     except Exception as e:
-        logger.warning(f"向量索引失败（不影响笔记）: {e}")
+        logger.error(f"任务执行异常 (task_id={task_id}): {e}", exc_info=True)
+        NoteGenerator()._update_status(task_id, TaskStatus.FAILED, message=str(e))
 
 
 @router.post('/delete_task')
@@ -130,18 +140,41 @@ def delete_task(data: RecordRequest):
 @router.post("/upload")
 async def upload(file: UploadFile = File(...)):
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    file_location = os.path.join(UPLOAD_DIR, file.filename)
+
+    # Sanitize filename: extract basename, replace problematic chars with underscores
+    import re
+    filename = os.path.basename(file.filename)
+    if not filename or filename.startswith('.') or '/' in filename or '\\' in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    # Replace spaces, parentheses, Chinese brackets with underscores
+    filename = re.sub(r'[ （）\(\)]+', '_', filename)
+    # Validate: only alphanumeric, dots, underscores, hyphens allowed
+    if len(filename) > 255 or not all(c.isalnum() or c in '._-' for c in filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    file_location = os.path.join(UPLOAD_DIR, filename)
+    # Defensive: ensure resolved path stays within UPLOAD_DIR
+    real_path = os.path.realpath(file_location)
+    if not real_path.startswith(os.path.realpath(UPLOAD_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    # Validate file size before reading (limit to 100MB)
+    content = await file.read()
+    if len(content) > 100 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 100MB)")
 
     with open(file_location, "wb+") as f:
-        f.write(await file.read())
+        f.write(content)
 
-    # 假设你静态目录挂载了 /uploads
-    return R.success({"url": f"/uploads/{file.filename}"})
+    return R.success({"url": f"/uploads/{filename}"})
 
 
 @router.post("/generate_note")
 def generate_note(data: VideoRequest, background_tasks: BackgroundTasks):
     try:
+        # local_doc is handled by MinerU polling, not this endpoint
+        if data.platform == 'local_doc':
+            raise HTTPException(status_code=400, detail="local_doc platform is not supported by this endpoint")
 
         video_id = extract_video_id(data.video_url, data.platform)
         # if not video_id:
@@ -175,6 +208,7 @@ def generate_note(data: VideoRequest, background_tasks: BackgroundTasks):
 def get_task_status(task_id: str):
     status_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.status.json")
     result_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json")
+    knowledge_graph_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}_knowledge_graph.md")
 
     # 优先读状态文件
     if os.path.exists(status_path):
@@ -189,9 +223,17 @@ def get_task_status(task_id: str):
             if os.path.exists(result_path):
                 with open(result_path, "r", encoding="utf-8") as rf:
                     result_content = json.load(rf)
+                
+                # 读取知识图谱（如果存在）
+                knowledge_graph = None
+                if os.path.exists(knowledge_graph_path):
+                    with open(knowledge_graph_path, "r", encoding="utf-8") as kgf:
+                        knowledge_graph = kgf.read()
+                
                 return R.success({
                     "status": status,
                     "result": result_content,
+                    "knowledge_graph": knowledge_graph,
                     "message": message,
                     "task_id": task_id
                 })
@@ -204,7 +246,14 @@ def get_task_status(task_id: str):
                 })
 
         if status == TaskStatus.FAILED.value:
-            return R.error(message or "任务失败", code=500)
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "code": 500,
+                    "msg": message or "任务失败",
+                    "data": {"task_id": task_id, "status": TaskStatus.FAILED.value, "message": message or "任务失败"}
+                }
+            )
 
         # 处理中状态
         return R.success({
@@ -217,9 +266,17 @@ def get_task_status(task_id: str):
     if os.path.exists(result_path):
         with open(result_path, "r", encoding="utf-8") as f:
             result_content = json.load(f)
+        
+        # 读取知识图谱（如果存在）
+        knowledge_graph = None
+        if os.path.exists(knowledge_graph_path):
+            with open(knowledge_graph_path, "r", encoding="utf-8") as kgf:
+                knowledge_graph = kgf.read()
+        
         return R.success({
             "status": TaskStatus.SUCCESS.value,
             "result": result_content,
+            "knowledge_graph": knowledge_graph,
             "task_id": task_id
         })
 
@@ -233,13 +290,53 @@ def get_task_status(task_id: str):
 
 @router.get("/image_proxy")
 async def image_proxy(request: Request, url: str):
+    # Validate URL to prevent SSRF attacks
+    parsed_url = urlparse(url)
+
+    # Only allow http/https schemes
+    if parsed_url.scheme not in ('http', 'https'):
+        raise HTTPException(status_code=400, detail="Invalid URL scheme")
+
+    # Enforce domain allowlist (no pass-through)
+    hostname = parsed_url.hostname or ""
+    allowed_domains = ('bilibili.com', 'bilivideo.com', 'biliplus.com',
+                       'hdslb.com', 'cncdn.io', 'cloudflare.com', 'akamaized.net',
+                       'douyin.com', 'douyinvod.com', 'kuaishou.com')
+    if not any(hostname.endswith(domain) or hostname == domain for domain in allowed_domains):
+        raise HTTPException(status_code=403, detail="Domain not allowed")
+
+    # Resolve hostname to IP and verify it's not private
+    import socket
+    try:
+        ip = socket.gethostbyname(hostname)
+    except socket.gaierror:
+        raise HTTPException(status_code=400, detail="Invalid hostname")
+    # Block private IP ranges after DNS resolution
+    private_ip_patterns = (
+        ip.startswith('10.') or
+        ip.startswith('192.168.') or
+        ip.startswith('172.16.') or ip.startswith('172.17.') or
+        ip.startswith('172.18.') or ip.startswith('172.19.') or
+        ip.startswith('172.20.') or ip.startswith('172.21.') or
+        ip.startswith('172.22.') or ip.startswith('172.23.') or
+        ip.startswith('172.24.') or ip.startswith('172.25.') or
+        ip.startswith('172.26.') or ip.startswith('172.27.') or
+        ip.startswith('172.28.') or ip.startswith('172.29.') or
+        ip.startswith('172.30.') or ip.startswith('172.31.') or
+        ip in ('127.0.0.1', '0.0.0.0') or
+        ip.startswith('169.254.') or  # link-local
+        ':' in ip  # IPv6 addresses contain colons
+    )
+    if private_ip_patterns:
+        raise HTTPException(status_code=403, detail="Access to private IPs not allowed")
+
     headers = {
         "Referer": "https://www.bilibili.com/",
         "User-Agent": request.headers.get("User-Agent", ""),
     }
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             resp = await client.get(url, headers=headers)
 
             if resp.status_code != 200:
@@ -250,7 +347,7 @@ async def image_proxy(request: Request, url: str):
                 resp.aiter_bytes(),
                 media_type=content_type,
                 headers={
-                    "Cache-Control": "public, max-age=86400",  #  缓存一天
+                    "Cache-Control": "public, max-age=86400",
                     "Content-Type": content_type,
                 }
             )

@@ -4,6 +4,38 @@ import { transformer } from '@/lib/markmap.ts'
 import { Toolbar } from 'markmap-toolbar'
 import 'markmap-toolbar/dist/style.css'
 import JSZip from 'jszip'
+import { NodeClickInfo, parseNodeContent } from '@/utils/promptGenerator'
+
+// 解码HTML实体（如 &#x5b9e; -> 实，&#12345; -> 对应字符）
+const decodeHtmlEntities = (text: string): string => {
+  if (!text) return text;
+
+  // 首先手动处理十六进制数字实体 &#xHHHH;
+  let decoded = text.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
+    return String.fromCodePoint(parseInt(hex, 16));
+  });
+
+  // 处理十进制数字实体 &#DDDD;
+  decoded = decoded.replace(/&#(\d+);/g, (_, dec) => {
+    return String.fromCodePoint(parseInt(dec, 10));
+  });
+
+  // 使用textarea处理命名实体（如 &amp; &lt; &gt; 等）
+  const textarea = document.createElement('textarea');
+  textarea.innerHTML = decoded;
+  return textarea.value;
+};
+
+// 清理HTML标签，只保留纯文本
+const stripHtml = (html: string): string => {
+  if (!html) return html;
+  // 先解码HTML实体
+  let text = decodeHtmlEntities(html);
+  // 移除HTML标签
+  const div = document.createElement('div');
+  div.innerHTML = text;
+  return div.textContent || div.innerText || text;
+};
 
 export interface MarkmapEditorProps {
   /** 要渲染的 Markdown 文本 */
@@ -18,19 +50,40 @@ export interface MarkmapEditorProps {
   height?: string
   /** 文档标题，用于导出HTML时的文件名 */
   title?: string
+  /** 节点点击回调 */
+  onNodeClick?: (nodeInfo: NodeClickInfo) => void
 }
 
 export default function MarkmapEditor({
   value,
   onChange,
   toolbarItems,
-  customButtons = [],
+  customButtons,
   height = '600px',
   title = 'mindmap',
+  onNodeClick,
 }: MarkmapEditorProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const mmRef = useRef<Markmap | undefined>()
   const toolbarRef = useRef<HTMLDivElement>(null)
+
+  // 存储转换后的树数据
+  const rootDataRef = useRef<any>(null)
+
+  // 从根节点向下查找匹配节点，直接构建完整信息
+  const findNodeByPath = (root: any, targetNode: any, parent: any, siblings: any[], currentPath: number[]): { node: any; parent: any; siblings: any[]; indexPath: number[] } | undefined => {
+    if (!root) return undefined
+    if (root === targetNode) {
+      return { node: root, parent, siblings, indexPath: currentPath }
+    }
+    if (root.children) {
+      for (let i = 0; i < root.children.length; i++) {
+        const found = findNodeByPath(root.children[i], targetNode, root, root.children, [...currentPath, i + 1])
+        if (found) return found
+      }
+    }
+    return undefined
+  }
 
   // 用于跟踪是否处于全屏状态
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -206,37 +259,6 @@ export default function MarkmapEditor({
 
       // 生成唯一ID
       const generateId = () => Math.random().toString(36).substring(2, 15);
-
-      // 解码HTML实体（如 &#x5b9e; -> 实，&#12345; -> 对应字符）
-      const decodeHtmlEntities = (text: string): string => {
-        if (!text) return text;
-
-        // 首先手动处理十六进制数字实体 &#xHHHH;
-        let decoded = text.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
-          return String.fromCodePoint(parseInt(hex, 16));
-        });
-
-        // 处理十进制数字实体 &#DDDD;
-        decoded = decoded.replace(/&#(\d+);/g, (_, dec) => {
-          return String.fromCodePoint(parseInt(dec, 10));
-        });
-
-        // 使用textarea处理命名实体（如 &amp; &lt; &gt; 等）
-        const textarea = document.createElement('textarea');
-        textarea.innerHTML = decoded;
-        return textarea.value;
-      };
-
-      // 清理HTML标签，只保留纯文本
-      const stripHtml = (html: string): string => {
-        if (!html) return html;
-        // 先解码HTML实体
-        let text = decodeHtmlEntities(html);
-        // 移除HTML标签
-        const div = document.createElement('div');
-        div.innerHTML = text;
-        return div.textContent || div.innerText || text;
-      };
 
       // 将 markmap 节点转换为 XMind 节点格式
       const convertToXMindNode = (node: any, isRoot = false): any => {
@@ -429,8 +451,193 @@ export default function MarkmapEditor({
     const mm = mmRef.current
     if (!mm) return
     const { root } = transformer.transform(value)
+
+    // 存储根节点数据
+    rootDataRef.current = root
+
     mm.setData(root).then(() => mm.fit())
   }, [value])
+
+  // SVG 点击事件委托，处理节点点击
+  useEffect(() => {
+    if (!onNodeClick) return
+
+    let cleanup: (() => void) | undefined
+
+    const bindClickHandler = () => {
+      const svg = svgRef.current
+      if (!svg) return false
+
+      // 检查是否有 markmap 节点已渲染
+      const nodes = svg.querySelectorAll('g.markmap-node')
+      if (nodes.length === 0) return false
+
+      const handleSVGClick = (e: MouseEvent) => {
+        const nodeEl = (e.target as Element).closest('g.markmap-node')
+        if (!nodeEl) return
+
+        // 移除之前的高亮
+        svg.querySelectorAll('.markmap-node-active').forEach(el => {
+          el.classList.remove('markmap-node-active')
+        })
+        nodeEl.classList.add('markmap-node-active')
+
+        try {
+          const datum = (nodeEl as any).__data__
+          if (!datum) return
+
+          // 从根节点向下查找该节点，并构建 indexPath
+          let mapEntry = rootDataRef.current ? findNodeByPath(rootDataRef.current, datum, null, [], []) : undefined
+
+          // 如果没找到，使用备选方案（直接用节点自身构建信息）
+          if (!mapEntry) {
+            // 构建最小化的节点信息用于回退
+            const rawContent = datum.content || ''
+            const cleanContent = stripHtml(rawContent)
+            const { name, typeTag } = parseNodeContent(cleanContent)
+            const fallbackNodeInfo: NodeClickInfo = {
+              content: name,
+              typeTag,
+              ancestors: [],
+              siblings: [],
+              depth: datum.state?.depth ?? 0,
+              isLeaf: !datum.children || datum.children.length === 0,
+              treeIndex: undefined,
+            }
+            onNodeClick(fallbackNodeInfo)
+            return
+          }
+
+          // 使用 mapEntry 中已有的信息来构建上下文
+          const { node: currentNode, parent: currentParent, siblings: currentSiblings, indexPath } = mapEntry
+
+          // 计算树索引
+          const treeIndex = indexPath.length > 0 ? indexPath.join('.') : undefined
+
+          // 收集祖先节点 - 从根节点沿着 indexPath 找到所有祖先
+          const ancestors: string[] = []
+          const ancestorsDetails: any[] = []
+          let ancestorNode = rootDataRef.current
+          for (let i = 0; i < indexPath.length - 1; i++) {
+            const childIndex = indexPath[i] - 1
+            if (ancestorNode.children && ancestorNode.children[childIndex]) {
+              ancestorNode = ancestorNode.children[childIndex]
+              const parsed = parseNodeContent(stripHtml(ancestorNode.content || ''))
+              ancestors.unshift(parsed.name)
+              // 构建祖先的 indexPath（到该祖先为止）
+              const ancestorPath = indexPath.slice(0, i + 1)
+              ancestorsDetails.push({
+                name: parsed.name,
+                typeTag: parsed.typeTag,
+                treeIndex: ancestorPath.join('.'),
+                depth: ancestorNode.state?.depth ?? (i + 1)
+              })
+            }
+          }
+
+          // 收集兄弟节点
+          const siblings = (currentSiblings || [])
+            .filter((s: any) => s !== datum)
+            .map((s: any) => parseNodeContent(stripHtml(s.content || '')).name)
+
+          const siblingsDetails: any[] = (currentSiblings || [])
+            .filter((s: any) => s !== datum)
+            .map((s: any) => {
+              const parsed = parseNodeContent(stripHtml(s.content || ''))
+              return {
+                name: parsed.name,
+                typeTag: parsed.typeTag,
+                treeIndex: treeIndex ? treeIndex.replace(/\.\d+$/, '') : '',
+                depth: s.state?.depth ?? 0
+              }
+            })
+
+          // 收集父节点详细信息
+          const parentDetail = currentParent ? (() => {
+            const parsed = parseNodeContent(stripHtml(currentParent.content || ''))
+            const parentPath = indexPath.slice(0, -1)
+            return {
+              name: parsed.name,
+              typeTag: parsed.typeTag,
+              treeIndex: parentPath.join('.'),
+              depth: currentParent.state?.depth ?? (indexPath.length - 1)
+            }
+          })() : null
+
+          // 收集子节点详细信息
+          const childrenDetails: any[] = (datum.children || []).map((child: any, idx: number) => {
+            const parsed = parseNodeContent(stripHtml(child.content || ''))
+            return {
+              name: parsed.name,
+              typeTag: parsed.typeTag,
+              treeIndex: treeIndex ? `${treeIndex}.${idx + 1}` : `${idx + 1}`,
+              depth: child.state?.depth ?? (indexPath.length + 1)
+            }
+          })
+
+          // 构建路径信息
+          const totalSiblings = (currentSiblings || []).length
+          const position = totalSiblings > 0
+            ? ((currentSiblings || []).findIndex((s: any) => s === datum) + 1)
+            : 1
+
+          const rawContent = datum.content || ''
+          const cleanContent = stripHtml(rawContent)
+          const { name, typeTag } = parseNodeContent(cleanContent)
+
+          const nodeInfo: NodeClickInfo = {
+            content: name,
+            typeTag,
+            ancestors,
+            siblings,
+            depth: datum.state?.depth ?? indexPath.length,
+            isLeaf: !datum.children || datum.children.length === 0,
+            treeIndex,
+            // 新增字段
+            ancestorsDetails,
+            parentDetail,
+            siblingsDetails,
+            childrenDetails,
+            pathInfo: {
+              treeIndex: treeIndex || '',
+              depth: datum.state?.depth ?? indexPath.length,
+              position,
+              totalSiblings
+            }
+          }
+
+          onNodeClick(nodeInfo)
+        } catch (err) {
+          console.error('节点点击处理失败:', err)
+        }
+      }
+
+      svg.addEventListener('click', handleSVGClick)
+      cleanup = () => {
+        svg.removeEventListener('click', handleSVGClick)
+      }
+      return true
+    }
+
+    // 尝试立即绑定
+    if (!bindClickHandler()) {
+      // 如果 SVG 还没准备好，使用轮询等待
+      const interval = setInterval(() => {
+        if (bindClickHandler()) {
+          clearInterval(interval)
+        }
+      }, 300)
+
+      return () => {
+        clearInterval(interval)
+        cleanup?.()
+      }
+    }
+
+    return () => {
+      cleanup?.()
+    }
+  }, [onNodeClick])
 
   // 文本输入变化回调（如果你自行添加 textarea 编辑区）
   // const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -439,6 +646,17 @@ export default function MarkmapEditor({
 
   return (
     <div className="relative flex h-full flex-col bg-white">
+      {/* 节点点击高亮样式 */}
+      <style>{`
+        .markmap-node-active > rect,
+        .markmap-node-active > circle {
+          stroke: #3b82f6 !important;
+          stroke-width: 3 !important;
+        }
+        .markmap-node-active > line {
+          stroke: #3b82f6 !important;
+        }
+      `}</style>
       {/* 全屏/退出全屏 按钮 */}
       <div className="absolute top-2 right-2 z-20 flex space-x-2">
         <button

@@ -1,6 +1,7 @@
 /* -------------------- 常量 -------------------- */
 import {
   BiliBiliLogo,
+  DocumentLogo,
   DouyinLogo,
   KuaishouLogo,
   LocalLogo,
@@ -24,6 +25,7 @@ export const noteStyles = [
   { label: '任务导向', value: 'task_oriented' },
   { label: '商业风格', value: 'business' },
   { label: '会议纪要', value: 'meeting_minutes' },
+  { label: '知识点图谱', value: 'knowledge_graph' },
 ] as const
 
 export const videoPlatforms = [
@@ -32,4 +34,5 @@ export const videoPlatforms = [
   { label: '抖音', value: 'douyin', logo: DouyinLogo },
   { label: '快手', value: 'kuaishou', logo: KuaishouLogo },
   { label: '本地视频', value: 'local', logo: LocalLogo },
+  { label: '本地文档', value: 'local_doc', logo: DocumentLogo },
 ] as const

@@ -20,7 +20,7 @@ from events import register_handler
 from ffmpeg_helper import ensure_ffmpeg_or_raise
 
 logger = get_logger(__name__)
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 # 读取 .env 中的路径
 static_path = os.getenv('STATIC', '/static')

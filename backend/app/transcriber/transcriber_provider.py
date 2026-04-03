@@ -3,7 +3,6 @@ import platform
 from enum import Enum
 
 from app.transcriber.groq import GroqTranscriber
-from app.transcriber.whisper import WhisperTranscriber
 from app.transcriber.bcut import BcutTranscriber
 from app.transcriber.kuaishou import KuaishouTranscriber
 from app.utils.logger import get_logger
@@ -16,6 +15,8 @@ class TranscriberType(str, Enum):
     BCUT = "bcut"
     KUAISHOU = "kuaishou"
     GROQ = "groq"
+    DOUBAO = "doubao"
+    ALIYUN_ASR = "aliyun-asr"
 
 # 在 Apple 平台尝试导入 MLX Whisper（不再依赖环境变量，支持前端动态切换）
 MLX_WHISPER_AVAILABLE = False
@@ -36,6 +37,8 @@ _transcribers = {
     TranscriberType.BCUT: None,
     TranscriberType.KUAISHOU: None,
     TranscriberType.GROQ: None,
+    TranscriberType.DOUBAO: None,
+    TranscriberType.ALIYUN_ASR: None,
 }
 
 # 公共实例初始化函数
@@ -55,6 +58,7 @@ def get_groq_transcriber():
     return _init_transcriber(TranscriberType.GROQ, GroqTranscriber)
 
 def get_whisper_transcriber(model_size="base", device="cuda"):
+    from app.transcriber.whisper import WhisperTranscriber
     return _init_transcriber(TranscriberType.FAST_WHISPER, WhisperTranscriber, model_size=model_size, device=device)
 
 def get_bcut_transcriber():
@@ -68,6 +72,14 @@ def get_mlx_whisper_transcriber(model_size="base"):
         logger.warning("MLX Whisper 不可用，请确保在 Apple 平台且已安装 mlx_whisper")
         raise ImportError("MLX Whisper 不可用")
     return _init_transcriber(TranscriberType.MLX_WHISPER, MLXWhisperTranscriber, model_size=model_size)
+
+def get_doubao_transcriber():
+    from app.transcriber.doubao import DoubaoTranscriber
+    return _init_transcriber(TranscriberType.DOUBAO, DoubaoTranscriber)
+
+def get_aliyun_transcriber():
+    from app.transcriber.aliyun_asr import AliyunTranscriber
+    return _init_transcriber(TranscriberType.ALIYUN_ASR, AliyunTranscriber)
 
 # 通用入口
 def get_transcriber(transcriber_type="fast-whisper", model_size="base", device="cuda"):
@@ -111,6 +123,12 @@ def get_transcriber(transcriber_type="fast-whisper", model_size="base", device="
 
     elif transcriber_enum == TranscriberType.GROQ:
         return get_groq_transcriber()
+
+    elif transcriber_enum == TranscriberType.DOUBAO:
+        return get_doubao_transcriber()
+
+    elif transcriber_enum == TranscriberType.ALIYUN_ASR:
+        return get_aliyun_transcriber()
 
     # fallback
     logger.warning(f'未识别转录器类型 "{transcriber_type}"，使用 fast-whisper 作为默认')

@@ -44,6 +44,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           rewrite: path => path.replace(/^\/api/, '/api'),
         },
+        '/mineru': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+          rewrite: path => path.replace(/^\/mineru/, '/api/mineru'),
+        },
         '/static': {
           target: apiBaseUrl,
           changeOrigin: true,

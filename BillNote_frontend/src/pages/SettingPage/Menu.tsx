@@ -4,6 +4,7 @@ import {
   HardDriveDownload,
   Info,
   Activity,
+  FileText,
 } from 'lucide-react'
 import MenuBar, { IMenuProps } from '@/pages/SettingPage/components/menuBar.tsx'
 
@@ -20,6 +21,12 @@ const Menu = () => {
       name: '音频转写配置',
       icon: <Captions />,
       path: '/settings/transcriber',
+    },
+    {
+      id: 'mineru',
+      name: 'MinerU 文档解析',
+      icon: <FileText />,
+      path: '/settings/mineru',
     },
     {
       id: 'download',

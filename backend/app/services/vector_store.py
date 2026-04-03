@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -5,6 +6,7 @@ from typing import Optional
 
 import chromadb
 from chromadb.config import Settings
+from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 
 from app.utils.logger import get_logger
 
@@ -12,6 +14,12 @@ logger = get_logger(__name__)
 
 NOTE_OUTPUT_DIR = os.getenv("NOTE_OUTPUT_DIR", "note_results")
 VECTOR_DB_DIR = os.getenv("VECTOR_DB_DIR", "vector_db")
+
+# UUID 格式正则（编译一次，全局复用）
+_UUID_PATTERN = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    re.IGNORECASE,
+)
 
 
 def _chunk_markdown(markdown: str) -> list[dict]:
@@ -21,6 +29,9 @@ def _chunk_markdown(markdown: str) -> list[dict]:
     for section in sections:
         section = section.strip()
         if not section or len(section) < 30:
+            # 记录被跳过的短片段，便于调试
+            if section.strip():
+                logger.debug(f"跳过短片段 (长度 {len(section)}): {section[:50]}...")
             continue
         heading_match = re.match(r'^(#{2,3})\s+(.+)', section)
         title = heading_match.group(2).strip() if heading_match else "intro"
@@ -106,21 +117,29 @@ class VectorStoreManager:
 
     def __init__(self):
         os.makedirs(VECTOR_DB_DIR, exist_ok=True)
+        self._embedding_fn = SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
         self._client = chromadb.PersistentClient(
             path=VECTOR_DB_DIR,
             settings=Settings(anonymized_telemetry=False),
         )
 
     def _collection_name(self, task_id: str) -> str:
-        """ChromaDB collection 名称：直接使用 task_id（UUID 格式合法）。"""
-        return task_id
+        """ChromaDB collection 名称：使用 task_id 的 hash，确保合法格式。
+
+        ChromaDB collection name 只能包含字母、数字、下划线和连字符，且不能以数字开头。
+        使用 hash 转换确保 task_id 符合要求。
+        """
+        if _UUID_PATTERN.match(task_id):
+            # 替换连字符为下划线，使其符合 ChromaDB 命名规范
+            return task_id.replace('-', '_')
+        # 如果不是合法 UUID，使用 hash
+        return f"task_{hashlib.sha256(task_id.encode()).hexdigest()[:16]}"
 
     def index_task(self, task_id: str) -> None:
         """读取笔记结果并建立向量索引。"""
         result_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json")
         if not os.path.exists(result_path):
-            logger.warning(f"笔记文件不存在，跳过索引: {result_path}")
-            return
+            raise FileNotFoundError(f"笔记文件不存在: {result_path}")
 
         with open(result_path, "r", encoding="utf-8") as f:
             note_data = json.load(f)
@@ -145,11 +164,12 @@ class VectorStoreManager:
         # 删除旧 collection（幂等）
         try:
             self._client.delete_collection(col_name)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"删除旧 collection 时出错（可能不存在）: {col_name}, {e}")
 
         collection = self._client.create_collection(
             name=col_name,
+            embedding_function=self._embedding_fn,
             metadata={"hnsw:space": "cosine"},
         )
 
@@ -222,5 +242,7 @@ class VectorStoreManager:
             # 检查是否包含 meta chunk，旧索引可能缺失
             meta = col.get(where={"source_type": "meta"}, limit=1)
             return len(meta["ids"]) > 0
-        except Exception:
+        except Exception as e:
+            # Collection 不存在时返回 False 是预期行为
+            logger.debug(f"检查索引状态时出错（可能不存在）: {task_id}, {e}")
             return False

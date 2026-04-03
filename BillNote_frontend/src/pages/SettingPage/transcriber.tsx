@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
@@ -10,13 +11,14 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { AudioLines, AlertTriangle, CheckCircle2, Download, Loader2, Save, XCircle } from 'lucide-react'
+import { AudioLines, AlertTriangle, CheckCircle2, Download, Loader2, Save, Key } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import {
   getTranscriberConfig,
   updateTranscriberConfig,
   getModelsStatus,
   downloadModel,
+  testAliyunConnection,
   TranscriberConfig,
   ModelStatus,
 } from '@/services/transcriber'
@@ -33,6 +35,11 @@ export default function Transcriber() {
   const [modelStatuses, setModelStatuses] = useState<ModelStatus[]>([])
   const [mlxModelStatuses, setMlxModelStatuses] = useState<ModelStatus[]>([])
   const [mlxAvailable, setMlxAvailable] = useState(false)
+
+  // 阿里云 ASR 配置 state
+  const [aliyunApiKey, setAliyunApiKey] = useState('')
+  const [aliyunSaving, setAliyunSaving] = useState(false)
+  const [aliyunTesting, setAliyunTesting] = useState(false)
 
   const fetchModelsStatus = useCallback(async () => {
     try {
@@ -52,6 +59,7 @@ export default function Transcriber() {
         setConfig(data)
         setSelectedType(data.transcriber_type)
         setSelectedModelSize(data.whisper_model_size)
+        setAliyunApiKey(data.aliyun_api_key || '')
       } catch {
         toast.error('获取转写器配置失败')
       } finally {
@@ -98,6 +106,48 @@ export default function Transcriber() {
       setTimeout(fetchModelsStatus, 1000)
     } catch {
       toast.error('下载请求失败')
+    }
+  }
+
+  // 保存阿里云 ASR 配置
+  const handleSaveAliyunConfig = async () => {
+    if (!aliyunApiKey.trim()) {
+      toast.error('请填写 API Key')
+      return
+    }
+    setAliyunSaving(true)
+    try {
+      await updateTranscriberConfig({
+        transcriber_type: selectedType,
+        aliyun_api_key: aliyunApiKey,
+      })
+      toast.success('阿里云 API 配置已保存')
+    } catch {
+      toast.error('保存阿里云配置失败')
+    } finally {
+      setAliyunSaving(false)
+    }
+  }
+
+  // 测试阿里云 ASR 连接
+  const handleTestAliyunConnection = async () => {
+    if (!aliyunApiKey.trim()) {
+      toast.error('请填写 API Key')
+      return
+    }
+    setAliyunTesting(true)
+    try {
+      await updateTranscriberConfig({
+        transcriber_type: selectedType,
+        aliyun_api_key: aliyunApiKey,
+      })
+      await testAliyunConnection({ aliyun_api_key: aliyunApiKey })
+      toast.success('连接成功')
+    } catch (error: any) {
+      const errorMsg = error?.response?.data?.msg || error?.message || '连接失败'
+      toast.error(typeof errorMsg === 'string' ? errorMsg : '连接失败')
+    } finally {
+      setAliyunTesting(false)
     }
   }
 
@@ -199,6 +249,58 @@ export default function Transcriber() {
           </Button>
         </CardContent>
       </Card>
+
+      {/* 阿里云 ASR API 配置 */}
+      {selectedType === 'aliyun-asr' && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Key className="h-5 w-5" />
+              阿里云 Fun-ASR API 配置
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">API Key</label>
+              <Input
+                type="password"
+                placeholder="请输入阿里云百炼 API Key"
+                value={aliyunApiKey}
+                onChange={e => setAliyunApiKey(e.target.value)}
+                className="max-w-md"
+              />
+              <p className="text-xs text-neutral-400">
+                阿里云百炼平台 API Key，可在控制台获取。支持免费 10 小时转写额度。
+              </p>
+            </div>
+            <div className="mt-2 flex gap-2">
+              <Button
+                onClick={handleSaveAliyunConfig}
+                disabled={aliyunSaving || !aliyunApiKey.trim()}
+              >
+                {aliyunSaving ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="mr-2 h-4 w-4" />
+                )}
+                保存配置
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleTestAliyunConnection}
+                disabled={aliyunTesting || !aliyunApiKey.trim()}
+              >
+                {aliyunTesting ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="mr-2 h-4 w-4" />
+                )}
+                测试连接
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Whisper 模型管理 */}
       {isWhisperType(selectedType) && currentModels.length > 0 && (

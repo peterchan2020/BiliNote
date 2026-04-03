@@ -232,6 +232,8 @@ class UniversalGPT(GPT):
 
             current_partials = new_partials
 
+        if not current_partials:
+            return ""
         return current_partials[0]
 
     def summarize(self, source: GPTSource) -> str:

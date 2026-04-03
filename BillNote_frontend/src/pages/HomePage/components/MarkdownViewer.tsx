@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, memo, FC } from 'react'
+import { useState, useEffect, useRef, useMemo, memo, FC, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { Button } from '@/components/ui/button.tsx'
 import { Copy, Download, ArrowRight, Play, ExternalLink } from 'lucide-react'
@@ -8,7 +8,7 @@ import Loading from '@/components/Lottie/Loading.tsx'
 import Idle from '@/components/Lottie/Idle.tsx'
 import StepBar from '@/pages/HomePage/components/StepBar.tsx'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { atomDark as codeStyle } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { vscDarkPlus as codeStyle } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import gfm from 'remark-gfm'
@@ -24,6 +24,8 @@ import TranscriptViewer from '@/pages/HomePage/components/transcriptViewer.tsx'
 import MarkmapEditor from '@/pages/HomePage/components/MarkmapComponent.tsx'
 import ChatPanel from '@/pages/HomePage/components/ChatPanel.tsx'
 import VideoBanner from '@/pages/HomePage/components/VideoBanner.tsx'
+import { NodeClickInfo, generateNodePrompt, PromptResult } from '@/utils/promptGenerator'
+import { ViewMode } from '@/pages/HomePage/components/MarkdownHeader'
 
 interface VersionNote {
   ver_id: string
@@ -196,15 +198,15 @@ function createMarkdownComponents(baseURL: string) {
 
       if (!inline && match) {
         return (
-          <div className="group bg-muted relative my-6 overflow-hidden rounded-lg border shadow-sm">
-            <div className="bg-muted text-muted-foreground flex items-center justify-between px-4 py-1.5 text-sm font-medium">
+          <div className="group relative my-6 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950 shadow-sm">
+            <div className="bg-neutral-900 text-neutral-300 flex items-center justify-between px-4 py-1.5 text-sm font-medium">
               <div>{match[1].toUpperCase()}</div>
               <button
                 onClick={() => {
                   navigator.clipboard.writeText(codeContent)
                   toast.success('代码已复制')
                 }}
-                className="bg-background/80 hover:bg-background flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors"
+                className="bg-neutral-800 hover:bg-neutral-700 flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors"
               >
                 <Copy className="h-3.5 w-3.5" />
                 复制
@@ -214,7 +216,7 @@ function createMarkdownComponents(baseURL: string) {
               style={codeStyle}
               language={match[1]}
               PreTag="div"
-              className="!bg-muted !m-0 !p-0"
+              className="!m-0 !p-0"
               customStyle={{
                 margin: 0,
                 padding: '1rem',
@@ -285,6 +287,14 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
   const [showChat, setShowChat] = useState<false | 'half' | 'full'>(false)
   const [viewMode, setViewMode] = useState<'map' | 'preview'>('preview')
   const svgRef = useRef<SVGSVGElement>(null)
+
+  // 节点点击气泡状态
+  const [nodePopover, setNodePopover] = useState<{
+    visible: boolean
+    promptData: PromptResult | null
+    nodeName: string
+    typeTag: string
+  } | null>(null)
 
   // 缓存 ReactMarkdown components，仅在 baseURL 变化时重建
   const markdownComponents = useMemo(() => createMarkdownComponents(baseURL), [baseURL])
@@ -369,6 +379,26 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
     document.body.removeChild(link)
   }
 
+  // 处理思维导图节点点击
+  const handleNodeClick = useCallback((nodeInfo: NodeClickInfo) => {
+    const promptData = generateNodePrompt(nodeInfo)
+    setNodePopover({
+      visible: true,
+      promptData,
+      nodeName: nodeInfo.content,
+      typeTag: nodeInfo.typeTag,
+    })
+  }, [])
+
+  // 发送到 OpenMAIC
+  const handleSendToOpenMAIC = useCallback((prompt: string) => {
+    const openmaicBaseUrl = import.meta.env.VITE_OPENMAIC_URL || 'http://localhost:3000'
+    const url = `${openmaicBaseUrl}?prompt=${encodeURIComponent(prompt)}&autoSubmit=false`
+    window.open(url, '_blank')
+    toast.success('已发送到 OpenMAIC，正在生成交互课堂...')
+    setNodePopover(null)
+  }, [])
+
   if (status === 'loading') {
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center space-y-4 text-neutral-500">
@@ -432,15 +462,76 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
       />
 
       {viewMode === 'map' ? (
-        <div className="flex w-full flex-1 overflow-hidden bg-white">
+        <div
+          className="relative flex w-full flex-1 overflow-hidden bg-white"
+          onClick={(e) => {
+            // 点击空白处关闭气泡（但不阻止节点点击）
+            const target = e.target as HTMLElement
+            if (target.closest('.node-popover')) return
+            // 点击在 SVG 内不关闭气泡（让 SVG 内部的事件处理器处理）
+            if (target.closest('svg') || target.tagName === 'svg') return
+            setNodePopover(null)
+          }}
+        >
           <div className={'w-full'}>
             <MarkmapEditor
-              value={selectedContent}
+              value={currentTask?.knowledge_graph || selectedContent}
               onChange={() => {}}
-              height="100%" // 根据需求可以设定百分比或固定高度
+              onNodeClick={handleNodeClick}
+              height="100%"
               title={currentTask?.audioMeta?.title || '思维导图'}
             />
           </div>
+
+          {/* 节点点击气泡 */}
+          {nodePopover && nodePopover.visible && (
+            <div className="node-popover absolute top-4 right-16 z-30 w-80 rounded-lg border bg-white p-4 shadow-lg">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="max-w-[180px] truncate font-medium">{nodePopover.nodeName}</span>
+                  {nodePopover.typeTag && nodePopover.typeTag !== '通用' && (
+                    <span className="rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-700">
+                      {nodePopover.typeTag}
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={() => setNodePopover(null)}
+                  className="text-neutral-400 hover:text-neutral-600"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <p className="mb-3 text-xs text-neutral-500">
+                {nodePopover.promptData?.prompt_summary}
+              </p>
+
+              <div className="flex gap-2">
+                <button
+                                    onClick={() => {
+                    if (nodePopover.promptData) {
+                      handleSendToOpenMAIC(nodePopover.promptData.prompt)
+                    }
+                  }}
+                  className="flex-1 rounded-md bg-blue-500 px-3 py-1.5 text-sm text-white hover:bg-blue-600"
+                >
+                  在 OpenMAIC 中深入学习
+                </button>
+                <button
+                  onClick={() => {
+                    if (nodePopover.promptData) {
+                      navigator.clipboard.writeText(nodePopover.promptData.prompt)
+                      toast.success('提示词已复制')
+                    }
+                  }}
+                  className="rounded-md border px-3 py-1.5 text-sm hover:bg-neutral-50"
+                >
+                  复制
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <div className="flex flex-1 overflow-hidden bg-white py-2">

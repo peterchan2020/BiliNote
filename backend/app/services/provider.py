@@ -69,9 +69,10 @@ class ProviderService:
             return '*' * len(key)
         return key[:4] + '*' * (len(key) - 8) + key[-4:]
     @staticmethod
-    def add_provider( name: str, api_key: str, base_url: str, logo: str, type_: str, enabled: int = 1):
+    def add_provider( id: str = None, name: str = '', api_key: str = '', base_url: str = '', logo: str = '', type_: str = '', enabled: int = 1):
         try:
-            id = uuid().lower()
+            if not id:
+                id = uuid().lower()
             logo='custom'
             return insert_provider(id, name, api_key, base_url, logo, type_, enabled)
         except Exception as  e:

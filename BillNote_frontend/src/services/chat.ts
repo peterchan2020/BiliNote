@@ -7,7 +7,7 @@ export interface ChatMessage {
 
 export interface ChatSource {
   text: string
-  source_type: 'markdown' | 'transcript'
+  source_type: 'markdown' | 'transcript' | 'meta'
   section_title?: string
   start_time?: number
   end_time?: number
