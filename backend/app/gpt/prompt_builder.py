@@ -5,7 +5,7 @@ note_formats = [
     {'label': '原片跳转', 'value': 'link'},
     {'label': '原片截图', 'value': 'screenshot'},
     {'label': 'AI总结', 'value': 'summary'},
-    {'label': '知识点图谱', 'value': 'knowledge_graph'}
+    {'label': '超长笔记', 'value': 'knowledge_graph'}
 ]
 
 note_styles = [
@@ -92,7 +92,7 @@ def get_style_format(style):
         'business': '7. **商业风格**: 适合商业报告、会议纪要，正式且精准。',
         'meeting_minutes': '8. **会议纪要**: 适合商业报告、会议纪要，正式且精准。',
         "tutorial":"9.**教程笔记**:尽可能详细的记录教程,特别是关键点和一些重要的结论步骤",
-        'knowledge_graph': '10. **知识点图谱**：以知识图谱的方式组织笔记，重点展示知识点之间的层级和关联关系。\n' + get_knowledge_graph_format()
+        'knowledge_graph': '10. **超长笔记**：以知识图谱的方式组织笔记，重点展示知识点之间的层级和关联关系。\n' + get_knowledge_graph_format()
     }
     return style_map.get(style, '')
 
@@ -129,7 +129,7 @@ def get_summary_format():
 
 def get_knowledge_graph_format():
     return '''
-13. **知识点图谱**：在笔记内容结束后，输出分隔符 `<!-- KNOWLEDGE_GRAPH -->`，
+13. **超长笔记**：在笔记内容结束后，输出分隔符 `<!-- KNOWLEDGE_GRAPH -->`，
 然后输出一份专门的知识点图谱，使用 Markdown 层级结构组织，要求：
 
 - 根节点为视频主题
@@ -138,7 +138,7 @@ def get_knowledge_graph_format():
 - 用 Markdown 层级（##/###/####/-）表示知识点的从属关系
 - 同一层级的兄弟节点代表并列知识点
 - 确保覆盖视频中所有核心知识点，不遗漏
-- 不要在知识图谱中包含时间戳或原片跳转标记
+- 不要在超长笔记中包含时间戳或原片跳转标记
 
 ## 递归分解规则
 

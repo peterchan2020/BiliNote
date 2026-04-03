@@ -44,7 +44,7 @@ export interface Task {
   status: TaskStatus
   audioMeta: AudioMeta
   createdAt: string
-  knowledge_graph?: string // 知识图谱数据，可选字段
+  knowledge_graph?: string // 超长笔记数据，可选字段
   formData: {
     video_url: string
     link: undefined | boolean

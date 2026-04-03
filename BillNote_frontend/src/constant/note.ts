@@ -25,7 +25,7 @@ export const noteStyles = [
   { label: '任务导向', value: 'task_oriented' },
   { label: '商业风格', value: 'business' },
   { label: '会议纪要', value: 'meeting_minutes' },
-  { label: '知识点图谱', value: 'knowledge_graph' },
+  { label: '超长笔记', value: 'knowledge_graph' },
 ] as const
 
 export const videoPlatforms = [
