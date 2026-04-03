@@ -278,11 +278,25 @@ class NoteGenerator:
                             chapter_min_words=300,
                             leaf_min_words=200,
                         )
-                        notes_gen = DetailedNotesGenerator(gpt, transcript, config)
+                        notes_gen = DetailedNotesGenerator(
+                            gpt=gpt,
+                            transcript=transcript,
+                            config=config,
+                            video_understanding=video_understanding,
+                            style=style,
+                            formats=_format or [],
+                        )
                         gen_result = notes_gen.generate(aligned_nodes)
 
                         detailed_notes = gen_result.markdown
                         logger.info(f"详细笔记生成成功，LLM调用次数: {gen_result.llm_call_count}")
+
+                        # 详细笔记中的截图标记替换
+                        if detailed_notes and self.video_path:
+                            try:
+                                detailed_notes = self._insert_screenshots(detailed_notes, self.video_path)
+                            except Exception as e:
+                                logger.warning(f"详细笔记截图插入失败，跳过: {e}")
                     else:
                         logger.warning(f"未找到知识图谱内容，跳过详细笔记生成")
                 except Exception as e:
