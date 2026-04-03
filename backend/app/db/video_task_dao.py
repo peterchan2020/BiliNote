@@ -5,17 +5,26 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# 插入任务
+# 插入或更新任务（upsert）
 def insert_video_task(video_id: str, platform: str, task_id: str):
     db = next(get_db())
     try:
+        # 先删除已存在的同 task_id 记录（处理重新生成场景）
+        existing = db.query(VideoTask).filter_by(task_id=task_id).first()
+        if existing:
+            db.delete(existing)
+            db.commit()
+            logger.info(f"已删除旧 task 记录: task_id={task_id}")
+
         task = VideoTask(video_id=video_id, platform=platform, task_id=task_id)
         db.add(task)
         db.commit()
         db.refresh(task)
         logger.info(f"Video task inserted successfully. video_id: {video_id}, platform: {platform}, task_id: {task_id}")
     except Exception as e:
+        db.rollback()
         logger.error(f"Failed to insert video task: {e}")
+        raise
     finally:
         db.close()
 

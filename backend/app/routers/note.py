@@ -75,6 +75,49 @@ def save_note_to_file(task_id: str, note):
         json.dump(asdict(note), f, ensure_ascii=False, indent=2)
 
 
+def _backup_existing_result(task_id: str) -> Optional[dict]:
+    """备份已有结果文件（用于重试失败时回滚）"""
+    result_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json")
+    if os.path.exists(result_path):
+        try:
+            with open(result_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            logger.warning(f"读取已有结果文件失败，无法备份: {result_path}")
+    return None
+
+
+def _restore_from_backup(task_id: str, backup_data: dict):
+    """从备份回滚结果文件"""
+    result_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json")
+    try:
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump(backup_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"已从备份回滚结果文件: {task_id}")
+    except Exception as e:
+        logger.error(f"回滚结果文件失败: {e}")
+
+
+def _cleanup_task_cache(task_id: str):
+    """清理单个任务的所有缓存文件"""
+    for suffix in ["", "_markdown", "_transcript", "_audio", "_knowledge_graph"]:
+        ext = ".md" if suffix == "_knowledge_graph" else ".json"
+        path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}{suffix}{ext}")
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+                logger.info(f"已清理缓存文件: {path}")
+            except Exception as e:
+                logger.warning(f"清理缓存文件失败: {path}: {e}")
+    # 清理状态文件
+    status_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.status.json")
+    if os.path.exists(status_path):
+        try:
+            os.remove(status_path)
+        except Exception:
+            pass
+
+
 def run_note_task(task_id: str, video_url: str, platform: str, quality: DownloadQuality,
                   link: bool = False, screenshot: bool = False, model_name: str = None, provider_id: str = None,
                   _format: list = None, style: str = None, extras: str = None, video_understanding: bool = False,
@@ -87,6 +130,12 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
         logger.error(f"任务缺少模型或提供者配置 (task_id={task_id})")
         NoteGenerator()._update_status(task_id, TaskStatus.FAILED, message="请选择模型和提供者")
         return
+
+    # 重试场景：先备份已有结果（放在 try 外部，确保异常路径也能访问）
+    backup_data = _backup_existing_result(task_id)
+    is_retry = backup_data is not None
+    if is_retry:
+        logger.info(f"检测到已有结果，备份用于重试回滚 (task_id={task_id})")
 
     try:
         def _execute_note_task():
@@ -110,10 +159,16 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
         logger.info(f"任务进入执行队列 (task_id={task_id})")
         note = task_serial_executor.run(_execute_note_task)
         logger.info(f"Note generated: {task_id}")
+
         if not note or not note.markdown:
-            logger.warning(f"任务 {task_id} 执行失败，跳过保存")
+            # 生成失败：重试场景回滚，首次场景清理缓存
+            _handle_task_failure(task_id, is_retry, backup_data, "生成结果为空")
             return
+
         save_note_to_file(task_id, note)
+        # 成功：清理备份（如果有）
+        if is_retry:
+            logger.info(f"重试成功，清理备份 (task_id={task_id})")
 
         # TODO: 重新启用向量索引（当前禁用，因 GPU 环境下 VectorStoreManager 初始化会崩溃）
         # try:
@@ -124,7 +179,19 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
 
     except Exception as e:
         logger.error(f"任务执行异常 (task_id={task_id}): {e}", exc_info=True)
-        NoteGenerator()._update_status(task_id, TaskStatus.FAILED, message=str(e))
+        _handle_task_failure(task_id, is_retry, backup_data, str(e))
+
+
+def _handle_task_failure(task_id: str, is_retry: bool, backup_data: Optional[dict], error_msg: str):
+    """统一处理任务失败：重试回滚 / 首次清理"""
+    if is_retry and backup_data:
+        _restore_from_backup(task_id, backup_data)
+        logger.warning(f"重试失败，已回滚到上一版结果 (task_id={task_id})")
+        NoteGenerator()._update_status(task_id, TaskStatus.FAILED, message="重试失败，已恢复上次成功版本")
+    else:
+        _cleanup_task_cache(task_id)
+        logger.warning(f"首次生成失败，已清理缓存 (task_id={task_id})")
+        NoteGenerator()._update_status(task_id, TaskStatus.FAILED, message=f"生成失败，请重试: {error_msg}")
 
 
 @router.post('/delete_task')
