@@ -5,7 +5,7 @@ import os
 import threading
 
 from app.services.chat_service import chat as chat_service
-from app.services.vector_store import VectorStoreManager
+from app.services.vector_store import get_vector_store
 from app.utils.logger import get_logger
 from app.utils.response import ResponseWrapper as R
 
@@ -20,7 +20,6 @@ _index_status: dict[str, str] = {}
 _index_lock = threading.Lock()
 
 # 持久化状态文件路径
-import os
 _STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "index_state.json")
 
 def _load_persistent_status() -> dict[str, str]:
@@ -83,7 +82,7 @@ def _do_index(task_id: str):
     """后台执行索引任务"""
     try:
         _update_status(task_id, "indexing")
-        store = VectorStoreManager()
+        store = get_vector_store()
         store.index_task(task_id)
         _update_status(task_id, "indexed")
         logger.info(f"索引完成: {task_id}")
@@ -108,7 +107,7 @@ def index_task(data: IndexRequest, background_tasks: BackgroundTasks):
             _update_status(data.task_id, "")
 
     # 如果已经索引过（持久化检查），直接返回
-    store = VectorStoreManager()
+    store = get_vector_store()
     if store.is_indexed(data.task_id):
         _update_status(data.task_id, "indexed")
         return R.success(msg="已完成索引")
@@ -129,7 +128,7 @@ def chat_status(task_id: str):
                 return R.success(data={"status": status, "indexed": status == "indexed"})
 
             # 内存没有记录，检查持久化
-            store = VectorStoreManager()
+            store = get_vector_store()
             indexed = store.is_indexed(task_id)
             if indexed:
                 _index_status[task_id] = "indexed"

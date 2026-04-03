@@ -69,6 +69,8 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
     if (!taskId) return
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
+    let startTime = Date.now()
+    const INDEX_TIMEOUT_MS = 60_000 // 60 秒超时
 
     const poll = async () => {
       try {
@@ -80,6 +82,12 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
           // 未索引，触发后台索引
           await indexTask(taskId)
           if (!cancelled) setIndexStatus('indexing')
+        }
+
+        // 超时检测
+        if (res.status === 'indexing' && Date.now() - startTime > INDEX_TIMEOUT_MS) {
+          if (!cancelled) setIndexStatus('failed')
+          return
         }
 
         // indexing 状态持续轮询
@@ -209,7 +217,8 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
   if (indexStatus === 'failed') {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-neutral-400">
-        <span className="text-sm">索引失败，请重试</span>
+        <span className="text-sm">索引失败或超时</span>
+        <span className="text-xs text-neutral-500">首次使用需下载 Embedding 模型，请确保网络畅通</span>
         <Button
           size="sm"
           variant="outline"

@@ -29,7 +29,6 @@ def _chunk_markdown(markdown: str) -> list[dict]:
     for section in sections:
         section = section.strip()
         if not section or len(section) < 30:
-            # 记录被跳过的短片段，便于调试
             if section.strip():
                 logger.debug(f"跳过短片段 (长度 {len(section)}): {section[:50]}...")
             continue
@@ -113,26 +112,67 @@ def _build_meta_chunk(audio_meta: dict) -> list[dict]:
 
 
 class VectorStoreManager:
-    """基于 ChromaDB 的笔记向量存储管理器。"""
+    """基于 ChromaDB 的笔记向量存储管理器（单例）。"""
+
+    _instance: Optional["VectorStoreManager"] = None
+    _initialized = False
+
+    def __new__(cls) -> "VectorStoreManager":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
 
     def __init__(self):
+        if VectorStoreManager._initialized:
+            return
+        VectorStoreManager._initialized = True
+
         os.makedirs(VECTOR_DB_DIR, exist_ok=True)
-        self._embedding_fn = SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
         self._client = chromadb.PersistentClient(
             path=VECTOR_DB_DIR,
             settings=Settings(anonymized_telemetry=False),
         )
+        # 懒加载 embedding 函数，避免启动时下载模型
+        self._embedding_fn: Optional[SentenceTransformerEmbeddingFunction] = None
+        logger.info("VectorStoreManager 初始化完成（单例）")
+
+    def _ensure_embedding_fn(self) -> SentenceTransformerEmbeddingFunction:
+        """懒加载 embedding 函数，带国内镜像支持和清晰错误提示。"""
+        if self._embedding_fn is not None:
+            return self._embedding_fn
+
+        model_name = "all-MiniLM-L6-v2"
+
+        # 尝试使用国内 HF 镜像（如果配置了）
+        if not os.environ.get("HF_ENDPOINT"):
+            # 尝试常见国内镜像
+            for mirror in ["https://hf-mirror.com", "https://huggingface.moecube.com"]:
+                os.environ["HF_ENDPOINT"] = mirror
+                try:
+                    self._embedding_fn = SentenceTransformerEmbeddingFunction(model_name=model_name)
+                    logger.info(f"使用镜像 {mirror} 加载 embedding 模型成功")
+                    return self._embedding_fn
+                except Exception as e:
+                    logger.debug(f"镜像 {mirror} 加载失败: {e}")
+                    continue
+
+        # 没有配置镜像或镜像不可用，尝试默认
+        try:
+            self._embedding_fn = SentenceTransformerEmbeddingFunction(model_name=model_name)
+            logger.info("加载 embedding 模型成功")
+            return self._embedding_fn
+        except Exception:
+            raise ConnectionError(
+                f"无法下载 embedding 模型 '{model_name}'。请执行以下操作之一：\n"
+                f"1. 设置环境变量 HF_ENDPOINT=https://hf-mirror.com 使用国内镜像\n"
+                f"2. 手动下载模型到 ~/.cache/huggingface/hub/\n"
+                f"3. 确保网络可以访问 huggingface.co"
+            )
 
     def _collection_name(self, task_id: str) -> str:
-        """ChromaDB collection 名称：使用 task_id 的 hash，确保合法格式。
-
-        ChromaDB collection name 只能包含字母、数字、下划线和连字符，且不能以数字开头。
-        使用 hash 转换确保 task_id 符合要求。
-        """
+        """ChromaDB collection 名称：使用 task_id 的 hash，确保合法格式。"""
         if _UUID_PATTERN.match(task_id):
-            # 替换连字符为下划线，使其符合 ChromaDB 命名规范
             return task_id.replace('-', '_')
-        # 如果不是合法 UUID，使用 hash
         return f"task_{hashlib.sha256(task_id.encode()).hexdigest()[:16]}"
 
     def index_task(self, task_id: str) -> None:
@@ -147,7 +187,6 @@ class VectorStoreManager:
         markdown = note_data.get("markdown", "")
         transcript = note_data.get("transcript", {})
         segments = transcript.get("segments", [])
-
         audio_meta = note_data.get("audio_meta", {})
 
         meta_chunks = _build_meta_chunk(audio_meta)
@@ -161,7 +200,6 @@ class VectorStoreManager:
 
         col_name = self._collection_name(task_id)
 
-        # 删除旧 collection（幂等）
         try:
             self._client.delete_collection(col_name)
         except Exception as e:
@@ -169,7 +207,7 @@ class VectorStoreManager:
 
         collection = self._client.create_collection(
             name=col_name,
-            embedding_function=self._embedding_fn,
+            embedding_function=self._ensure_embedding_fn(),
             metadata={"hnsw:space": "cosine"},
         )
 
@@ -179,49 +217,6 @@ class VectorStoreManager:
 
         collection.add(documents=documents, metadatas=metadatas, ids=ids)
         logger.info(f"向量索引完成: task_id={task_id}, chunks={len(all_chunks)}")
-
-    def _parse_results(self, results: dict) -> list[dict]:
-        """将 ChromaDB query 结果转换为 chunk 列表。"""
-        chunks = []
-        if not results or not results.get("documents") or not results["documents"][0]:
-            return chunks
-        for i in range(len(results["documents"][0])):
-            chunks.append({
-                "text": results["documents"][0][i],
-                "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
-                "distance": results["distances"][0][i] if results["distances"] else None,
-            })
-        return chunks
-
-    def query(self, task_id: str, query_text: str, n_results: int = 6) -> list[dict]:
-        """
-        按固定配额从各来源检索：meta 1 条、markdown 2 条、transcript 3 条，
-        确保三种来源都被召回。
-        """
-        col_name = self._collection_name(task_id)
-        try:
-            collection = self._client.get_collection(col_name)
-        except Exception:
-            logger.warning(f"Collection 不存在: {col_name}")
-            return []
-
-        all_chunks = []
-
-        # 每种来源的配额
-        quotas = {"meta": 1, "markdown": 2, "transcript": 3}
-
-        for source_type, quota in quotas.items():
-            try:
-                results = collection.query(
-                    query_texts=[query_text],
-                    n_results=quota,
-                    where={"source_type": source_type},
-                )
-                all_chunks.extend(self._parse_results(results))
-            except Exception:
-                pass
-
-        return all_chunks
 
     def delete_index(self, task_id: str) -> None:
         """删除指定任务的向量索引。"""
@@ -239,10 +234,59 @@ class VectorStoreManager:
             col = self._client.get_collection(col_name)
             if col.count() == 0:
                 return False
-            # 检查是否包含 meta chunk，旧索引可能缺失
             meta = col.get(where={"source_type": "meta"}, limit=1)
             return len(meta["ids"]) > 0
         except Exception as e:
-            # Collection 不存在时返回 False 是预期行为
             logger.debug(f"检查索引状态时出错（可能不存在）: {task_id}, {e}")
             return False
+
+    def query(self, task_id: str, query_text: str, quotas: Optional[dict] = None) -> list[dict]:
+        """
+        按固定配额从各来源检索向量。
+
+        Args:
+            task_id: 任务 ID
+            query_text: 查询文本
+            quotas: 各来源的检索配额，默认 {"meta": 2, "markdown": 5, "transcript": 8}
+
+        Returns:
+            检索到的 chunk 列表
+        """
+        if quotas is None:
+            quotas = {"meta": 2, "markdown": 5, "transcript": 8}
+
+        col_name = self._collection_name(task_id)
+        try:
+            collection = self._client.get_collection(col_name)
+        except Exception:
+            logger.warning(f"Collection 不存在: {task_id}")
+            return []
+
+        # 确保 embedding 函数已加载
+        embedding_fn = self._ensure_embedding_fn()
+
+        all_chunks: list[dict] = []
+        for source_type, quota in quotas.items():
+            try:
+                results = collection.query(
+                    query_texts=[query_text],
+                    n_results=quota,
+                    where={"source_type": source_type},
+                    include=["documents", "metadatas", "distances"],
+                )
+                if results.get("documents") and results["documents"][0]:
+                    for i in range(len(results["documents"][0])):
+                        all_chunks.append({
+                            "text": results["documents"][0][i],
+                            "metadata": results["metadatas"][0][i] if results.get("metadatas") else {},
+                            "distance": results["distances"][0][i] if results.get("distances") else None,
+                        })
+            except Exception as e:
+                logger.debug(f"检索 {source_type} 失败: {e}")
+
+        return all_chunks
+
+
+def get_vector_store() -> VectorStoreManager:
+    """获取 VectorStoreManager 单例。"""
+    return VectorStoreManager()
