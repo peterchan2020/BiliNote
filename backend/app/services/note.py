@@ -292,11 +292,17 @@ class NoteGenerator:
                         logger.info(f"详细笔记生成成功，LLM调用次数: {gen_result.llm_call_count}")
 
                         # 详细笔记中的截图标记替换
-                        if detailed_notes and self.video_path:
-                            try:
-                                detailed_notes = self._insert_screenshots(detailed_notes, self.video_path)
-                            except Exception as e:
-                                logger.warning(f"详细笔记截图插入失败，跳过: {e}")
+                        if detailed_notes:
+                            if self.video_path and self.video_path.exists():
+                                try:
+                                    detailed_notes = self._insert_screenshots(detailed_notes, self.video_path)
+                                except Exception as e:
+                                    logger.warning(f"详细笔记截图插入失败，跳过: {e}")
+                            else:
+                                logger.warning(
+                                    f"详细笔记截图插入跳过: video_path 为空或文件不存在 "
+                                    f"(task_id={task_id}, video_path={self.video_path})"
+                                )
                     else:
                         logger.warning(f"未找到知识图谱内容，跳过详细笔记生成")
                 except Exception as e:
@@ -472,12 +478,30 @@ class NoteGenerator:
         task_id = audio_cache_file.stem.split("_")[0]
         self._update_status(task_id, status_phase)
 
+        # 提前计算视频相关变量（缓存命中分支也需要使用）
+        need_video = screenshot or video_understanding
+        if screenshot and not grid_size:
+            grid_size = [2, 2]
+        frame_interval = video_interval if video_interval and video_interval > 0 else 6
+        use_scene_detection = not (video_interval and video_interval > 0)
+
         # 已有缓存，尝试加载
         if audio_cache_file.exists():
             logger.info(f"检测到音频缓存 ({audio_cache_file})，直接读取")
             try:
-                data = json.loads(audio_cache_file.read_text(encoding="utf-8"))
-                return AudioDownloadResult(**data)
+                audio = AudioDownloadResult(**json.loads(audio_cache_file.read_text(encoding="utf-8")))
+                # 缓存命中时，若需要视频但 video_path 未设置，补充下载视频
+                if need_video and not self.video_path:
+                    logger.info("检测到需要视频但 video_path 为空，补充下载视频")
+                    self._ensure_video_downloaded(
+                        downloader=downloader,
+                        video_url=video_url,
+                        task_id=task_id,
+                        grid_size=grid_size,
+                        frame_interval=frame_interval,
+                        use_scene_detection=use_scene_detection,
+                    )
+                return audio
             except Exception as e:
                 logger.warning(f"读取音频缓存失败，将重新下载：{e}")
 
@@ -501,14 +525,6 @@ class NoteGenerator:
             except Exception as exc:
                 logger.warning(f"元信息提取失败，将尝试完整下载: {exc}")
 
-        # 判断是否需要下载视频
-        need_video = screenshot or video_understanding
-        if screenshot and not grid_size:
-            grid_size = [2, 2]
-
-        frame_interval = video_interval if video_interval and video_interval > 0 else 6
-        # 当 video_interval 为 0 或未设置时，启用场景检测采样
-        use_scene_detection = not (video_interval and video_interval > 0)
         if need_video:
             try:
                 logger.info("开始下载视频")
@@ -551,6 +567,49 @@ class NoteGenerator:
             self._handle_exception(task_id, exc)
             raise
 
+    def _ensure_video_downloaded(
+        self,
+        downloader: Downloader,
+        video_url: Union[str, HttpUrl],
+        task_id: str,
+        grid_size: List[int],
+        frame_interval: int,
+        use_scene_detection: bool,
+    ) -> None:
+        """
+        补充下载视频（用于音频缓存命中但 video_path 为空的场景）。
+        复用现有视频下载 + 缩略图生成逻辑。
+
+        :param downloader: 下载器实例
+        :param video_url: 视频链接
+        :param task_id: 任务 ID
+        :param grid_size: 缩略图网格尺寸
+        :param frame_interval: 截帧间隔
+        :param use_scene_detection: 是否启用场景检测
+        """
+        try:
+            logger.info("开始补充下载视频")
+            video_path_str = downloader.download_video(video_url)
+            self.video_path = Path(video_path_str)
+            logger.info(f"视频补充下载完成：{self.video_path}")
+
+            if grid_size:
+                self.video_img_urls = VideoReader(
+                    video_path=str(self.video_path),
+                    grid_size=tuple(grid_size),
+                    frame_interval=frame_interval,
+                    unit_width=960,
+                    unit_height=540,
+                    save_quality=80,
+                    use_scene_detection=use_scene_detection,
+                    max_scene_frames=grid_size[0] * grid_size[1] * 4,
+                ).run()
+            else:
+                logger.info("未指定 grid_size，跳过缩略图生成")
+        except Exception as exc:
+            logger.error(f"补充下载视频失败：{exc}")
+            self._handle_exception(task_id, exc)
+            raise
 
     def _get_transcript(
         self,
@@ -750,6 +809,10 @@ class NoteGenerator:
         for idx, (marker, ts) in enumerate(matches):
             try:
                 img_path = generate_screenshot(str(video_path), str(IMAGE_OUTPUT_DIR), ts, idx)
+                # 验证截图实际生成成功（generate_screenshot 返回路径但不保证文件存在）
+                if not os.path.exists(img_path):
+                    logger.warning(f"截图文件未生成 (timestamp={ts})，跳过该标记")
+                    continue
                 filename = Path(img_path).name
                 # 构建前端可访问的 URL，例如 /static/screenshots/{filename}
                 img_url = f"{IMAGE_BASE_URL.rstrip('/')}/{filename}"
