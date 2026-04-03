@@ -34,11 +34,31 @@ class DetailedNotesGenerator:
     - 叶子节点：知识点级详细展开（提取相关时间段 → AI详细描述）
     """
 
-    def __init__(self, gpt: GPT, transcript: TranscriptResult, config: Optional[DetailedNotesConfig] = None):
+    def __init__(
+        self,
+        gpt: GPT,
+        transcript: TranscriptResult,
+        config: Optional[DetailedNotesConfig] = None,
+        video_understanding: bool = False,
+        style: Optional[str] = None,
+        formats: Optional[List[str]] = None,
+    ):
         self.gpt = gpt
         self.transcript = transcript
         self.config = config or DetailedNotesConfig()
+        self._video_understanding = video_understanding
+        self._style = style
+        self._formats = formats or []
         self._llm_call_count = 0
+        self._should_insert_screenshots()
+
+    def _should_insert_screenshots(self) -> None:
+        """检测是否应插入截图标记"""
+        self.should_insert_screenshots = (
+            self._video_understanding
+            and self._style == "knowledge_graph"
+            and "screenshot" in self._formats
+        )
 
     def generate(self, aligned_nodes: List[KGNodeWithTimestamp]) -> GenerationResult:
         """
@@ -124,6 +144,13 @@ class DetailedNotesGenerator:
 5. 在章节标题下方或开头标注时间戳，格式为「[mm:ss - mm:ss]」，例如「[00:30 - 05:20]」
 """
 
+        if self.should_insert_screenshots:
+            mid_time = self._format_time((node.start_time + node.end_time) / 2)
+            prompt += f"""
+6. 【原片截图】请在章节内容结束后，插入一个原片截图标记，格式为 *Screenshot-[{mid_time}]。
+   这些标记会被自动替换为对应时间点的视频关键帧截图。
+"""
+
         # 构造 GPTSource（复用现有架构）
         source = GPTSource(
             title=node.node_name,
@@ -165,6 +192,13 @@ class DetailedNotesGenerator:
 4. 字数不少于 {self.config.leaf_min_words} 字
 5. 使用 Markdown 格式
 6. 在知识点标题下方或开头标注时间戳，格式为「[mm:ss - mm:ss]」，例如「[02:30 - 04:15]」
+"""
+
+        if self.should_insert_screenshots:
+            mid_time = self._format_time((node.start_time + node.end_time) / 2)
+            prompt += f"""
+7. 【原片截图】请在知识点内容结束后，插入一个原片截图标记，格式为 *Screenshot-[{mid_time}]。
+   这些标记会被自动替换为对应时间点的视频关键帧截图。
 """
 
         source = GPTSource(
@@ -277,9 +311,9 @@ class DetailedNotesGenerator:
 
 要求：
 1. 字数 300-500 字
-2. 包含【内容概览】【核心知识点】【学习建议】三个板块
+2. 包含【内容概览】【核心观点】【学习建议】三个板块
 3. 内容概览：简要说明视频的主题、时长、内容结构
-4. 核心知识点：基于各章节概要，列出关键知识点（3-5条），每个知识点一句话概括
+4. 核心观点：基于各章节概要，列出核心观点（3-5条），每个观点一句话概括
 5. 学习建议：基于视频内容给出学习路径建议
 6. 使用 Markdown 格式，结构清晰
 """
