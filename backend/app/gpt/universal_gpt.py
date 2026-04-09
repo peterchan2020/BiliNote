@@ -159,6 +159,18 @@ class UniversalGPT(GPT):
         )
 
     @staticmethod
+    def _is_token_limit_exceeded_error(exc: Exception) -> bool:
+        """检测是否是因为 token 超限导致的错误"""
+        raw = str(exc).lower()
+        return (
+            "exceed max message tokens" in raw
+            or "max message tokens" in raw
+            or "token limit" in raw
+            or "context length" in raw
+            or "invalidparameter" in raw
+        )
+
+    @staticmethod
     def _is_retryable_error(exc: Exception) -> bool:
         raw = str(exc).lower()
         retryable_tokens = (
@@ -182,7 +194,8 @@ class UniversalGPT(GPT):
         status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
         return status in {408, 409, 429, 500, 502, 503, 504, 524}
 
-    def _chat_completion_create(self, messages: list):
+    def _chat_completion_create(self, messages: list, reduce_images_on_failure: bool = True):
+        """创建聊天完成请求，支持 token 超限时自动减少图片重试"""
         last_exc = None
         for attempt in range(self._max_retry_attempts):
             try:
@@ -193,6 +206,16 @@ class UniversalGPT(GPT):
                 )
             except Exception as exc:
                 last_exc = exc
+                # 如果是 token 超限错误，且消息中包含图片，尝试减少图片后重试
+                if (reduce_images_on_failure and 
+                    attempt < self._max_retry_attempts - 1 and
+                    self._is_token_limit_exceeded_error(exc)):
+                    # 尝试移除部分图片后重试
+                    reduced_messages = self._reduce_images_in_messages(messages)
+                    if reduced_messages is not None:
+                        messages = reduced_messages
+                        continue
+                
                 if attempt == self._max_retry_attempts - 1 or not self._is_retryable_error(exc):
                     raise
                 sleep_seconds = self._retry_base_backoff * (2 ** attempt)
@@ -201,6 +224,36 @@ class UniversalGPT(GPT):
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("chat completion failed without exception")
+
+    def _reduce_images_in_messages(self, messages: list) -> list | None:
+        """减少消息中的图片数量，返回新的消息列表，如果无法减少则返回 None"""
+        import copy
+        reduced_messages = copy.deepcopy(messages)
+        
+        for message in reduced_messages:
+            if isinstance(message.get("content"), list):
+                # 统计图片数量
+                image_indices = [
+                    i for i, item in enumerate(message["content"])
+                    if isinstance(item, dict) and item.get("type") == "image_url"
+                ]
+                
+                # 如果有图片，移除一半（至少保留一张）
+                if len(image_indices) > 1:
+                    remove_count = max(1, len(image_indices) // 2)
+                    # 从后往前移除，避免索引变化
+                    for idx in image_indices[-remove_count:]:
+                        message["content"].pop(idx)
+                    return reduced_messages
+                elif len(image_indices) == 1:
+                    # 只有一张图片时，移除它
+                    message["content"] = [
+                        item for item in message["content"]
+                        if not (isinstance(item, dict) and item.get("type") == "image_url")
+                    ]
+                    return reduced_messages
+        
+        return None
 
     def _merge_partials(self, partials: list, checkpoint_key: str | None, source_signature: str | None) -> str:
         def build_messages(texts, *_args, **_kwargs):

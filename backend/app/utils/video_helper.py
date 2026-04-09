@@ -33,10 +33,16 @@ def generate_screenshot(video_path: str, output_dir: str, timestamp: int, index:
     ]
 
     print("Running command:", command)
-    result = subprocess.run(command, capture_output=True, text=True)
+    # 不使用 text=True，避免 Windows 上 GBK 编码错误
+    # ffmpeg 输出可能包含无法用系统默认编码（GBK）解码的字节
+    result = subprocess.run(command, capture_output=True, timeout=300)
 
     if result.returncode != 0:
-        print("ffmpeg failed:", result.stderr)
+        try:
+            stderr_msg = result.stderr.decode("utf-8", errors="replace")
+        except Exception:
+            stderr_msg = result.stderr.decode(errors="replace") if result.stderr else "unknown error"
+        print("ffmpeg failed:", stderr_msg)
 
     return str(output_path)
 

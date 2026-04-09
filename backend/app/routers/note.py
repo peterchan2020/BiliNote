@@ -210,14 +210,30 @@ async def upload(file: UploadFile = File(...)):
 
     # Sanitize filename: extract basename, replace problematic chars with underscores
     import re
+    logger.info(f"Upload request - original filename: {file.filename}, content_type: {file.content_type}")
+    
     filename = os.path.basename(file.filename)
     if not filename or filename.startswith('.') or '/' in filename or '\\' in filename:
+        logger.error(f"Invalid filename (empty or starts with dot or contains path separators): {file.filename}")
         raise HTTPException(status_code=400, detail="Invalid filename")
-    # Replace spaces, parentheses, Chinese brackets with underscores
-    filename = re.sub(r'[ （）\(\)]+', '_', filename)
-    # Validate: only alphanumeric, dots, underscores, hyphens allowed
-    if len(filename) > 255 or not all(c.isalnum() or c in '._-' for c in filename):
-        raise HTTPException(status_code=400, detail="Invalid filename")
+    
+    # Replace Windows-incompatible characters and common Chinese punctuation
+    # Windows: < > : " | ? * 
+    # Chinese punctuation: ： ， ！ ？ ； ： " " ' ' （ ） 【 】 ｛ ｝ 《 》
+    # Common: spaces, parentheses, brackets
+    filename = re.sub(r'[<>:"|?*\\/ ：，！？；''（）【】｛｝《》\(\)\[\]\{\}]+', '_', filename)
+    logger.info(f"Sanitized filename: {filename}")
+    
+    # Validate: allow alphanumeric, dots, underscores, hyphens, and Chinese characters
+    if len(filename) > 255:
+        logger.error(f"Filename too long: {len(filename)} chars")
+        raise HTTPException(status_code=400, detail="Filename too long (max 255 characters)")
+    
+    # Allow Chinese characters, alphanumeric, dots, underscores, hyphens
+    invalid_chars = [c for c in filename if not (c.isalnum() or c in '._-' or '\u4e00' <= c <= '\u9fff')]
+    if invalid_chars:
+        logger.error(f"Invalid characters in filename: {invalid_chars}")
+        raise HTTPException(status_code=400, detail=f"Invalid filename: {filename}. Contains invalid characters: {''.join(invalid_chars[:10])}")
 
     file_location = os.path.join(UPLOAD_DIR, filename)
     # Defensive: ensure resolved path stays within UPLOAD_DIR
@@ -225,10 +241,10 @@ async def upload(file: UploadFile = File(...)):
     if not real_path.startswith(os.path.realpath(UPLOAD_DIR)):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    # Validate file size before reading (limit to 100MB)
+    # Validate file size before reading (limit to 500MB for video files)
     content = await file.read()
-    if len(content) > 100 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File too large (max 100MB)")
+    if len(content) > 500 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 500MB)")
 
     with open(file_location, "wb+") as f:
         f.write(content)

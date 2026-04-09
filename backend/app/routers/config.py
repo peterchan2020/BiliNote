@@ -168,23 +168,37 @@ def test_aliyun_connection(data: AliyunTestRequest):
         return R.error(msg="API Key 不能为空")
 
     try:
-        import dashscope
         from dashscope.audio.asr import Transcription
         from http import HTTPStatus
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+        
+        # 导入全局串行执行器，确保测试也不会与正常任务冲突
+        from app.transcriber.aliyun_asr import _aliyun_asr_executor
 
-        dashscope.base_http_api_url = "https://dashscope.aliyuncs.com/api/v1"
-        dashscope.api_key = data.aliyun_api_key
+        def _do_test():
+            """在串行执行器中运行测试"""
+            # 注意：不使用全局 dashscope 配置，完全通过参数传递
+            # 避免 "ReactorClientStreamObserverAndPublisher allows only a single Subscriber" 错误
 
-        # 用一个公开的短音频 URL 测试（阿里云官方示例音频）
-        sample_url = "https://dashscope.oss-cn-beijing.aliyuncs.com/samples/audio/paraformer/hello_world_female2.wav"
-        task_resp = Transcription.async_call(model="fun-asr", file_urls=[sample_url])
-        task_id = task_resp.output.task_id
+            # 用一个公开的短音频 URL 测试（阿里云官方示例音频）
+            sample_url = "https://dashscope.oss-cn-beijing.aliyuncs.com/samples/audio/paraformer/hello_world_female2.wav"
+            task_resp = Transcription.async_call(
+                model="fun-asr", 
+                file_urls=[sample_url],
+                api_key=data.aliyun_api_key
+            )
+            return task_resp.output.task_id
+
+        logger.info("提交测试任务到 Aliyun ASR 串行执行器...")
+        future = _aliyun_asr_executor.submit(_do_test)
+        task_id = future.result()
+        logger.info(f"测试任务已提交，task_id={task_id}")
 
         # 轮询最多 60 秒
-        import time
         start = time.time()
         while time.time() - start < 60:
-            resp = Transcription.fetch(task=task_id)
+            resp = Transcription.fetch(task=task_id, api_key=data.aliyun_api_key)
             if resp.output.task_status == "SUCCEEDED":
                 return R.success(msg="连接成功，API Key 有效")
             if resp.output.task_status == "FAILED":

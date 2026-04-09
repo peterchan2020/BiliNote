@@ -5,5 +5,6 @@ export const uploadFile = (formData: FormData) => {
     headers: {
       'Content-Type': 'multipart/form-data',
     },
+    timeout: 300000, // 5 minutes timeout for large file uploads
   })
 }

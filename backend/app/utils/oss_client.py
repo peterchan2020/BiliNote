@@ -61,11 +61,12 @@ def upload_bytes_to_oss(
     else:
         raise RuntimeError(f"[OSS] 上传失败，HTTP status: {result.status}")
 
-    # 公开 URL 格式：http://{bucket}.{endpoint_host}/{key}
-    # 例如：http://my-bucket.oss-cn-beijing.aliyuncs.com/path/to/file
+    # 公开 URL 格式：https://{bucket}.{endpoint_host}/{key}
+    # 例如：https://my-bucket.oss-cn-beijing.aliyuncs.com/path/to/file
+    # 注意：必须使用 https 协议，阿里云 ASR 等服务在拉取文件时需要 https
     from urllib.parse import urlparse
     parsed = urlparse(endpoint)
-    public_url = f"http://{bucket_name}.{parsed.netloc}/{key}"
+    public_url = f"https://{bucket_name}.{parsed.netloc}/{key}"
     logger.info(f"[OSS] 公开 URL: {public_url}")
     return public_url
 

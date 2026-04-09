@@ -31,6 +31,7 @@ if platform.system() == "Darwin":
 logger.info('初始化转录服务提供器')
 
 # 转录器单例缓存
+# 注意：Aliyun ASR 由于 dashscope SDK 的线程安全问题，不使用单例
 _transcribers = {
     TranscriberType.FAST_WHISPER: None,
     TranscriberType.MLX_WHISPER: None,
@@ -38,7 +39,7 @@ _transcribers = {
     TranscriberType.KUAISHOU: None,
     TranscriberType.GROQ: None,
     TranscriberType.DOUBAO: None,
-    TranscriberType.ALIYUN_ASR: None,
+    TranscriberType.ALIYUN_ASR: None,  # Aliyun ASR 不使用此单例
 }
 
 # 公共实例初始化函数
@@ -78,8 +79,14 @@ def get_doubao_transcriber():
     return _init_transcriber(TranscriberType.DOUBAO, DoubaoTranscriber)
 
 def get_aliyun_transcriber():
+    """获取阿里云 ASR 转写器实例
+    
+    注意：由于 dashscope SDK 的 Transcription 类不是线程安全的，
+    每次调用都创建新实例，避免并发请求时的冲突。
+    """
     from app.transcriber.aliyun_asr import AliyunTranscriber
-    return _init_transcriber(TranscriberType.ALIYUN_ASR, AliyunTranscriber)
+    logger.info(f'创建新的 AliyunTranscriber 实例（非单例）')
+    return AliyunTranscriber()
 
 # 通用入口
 def get_transcriber(transcriber_type="fast-whisper", model_size="base", device="cuda"):
