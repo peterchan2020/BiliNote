@@ -60,11 +60,7 @@ const formSchema = z
     style: z.string().nonempty('请选择笔记生成风格'),
     extras: z.string().optional(),
     video_understanding: z.boolean().optional(),
-    video_interval: z.coerce.number().min(1).max(30).default(6).optional(),
-    grid_size: z
-      .tuple([z.coerce.number().min(1).max(10), z.coerce.number().min(1).max(10)])
-      .default([2, 2])
-      .optional(),
+
   })
   .superRefine(({ video_url, platform }, ctx) => {
     if (platform === 'local') {
@@ -160,8 +156,6 @@ const NoteForm = () => {
       quality: 'medium',
       model_name: modelList[0]?.model_name || '',
       style: 'minimal',
-      video_interval: 6,
-      grid_size: [2, 2],
       format: [],
     },
   })
@@ -206,8 +200,6 @@ const NoteForm = () => {
       screenshot: formData.screenshot ?? false,
       link: formData.link ?? false,
       video_understanding: formData.video_understanding ?? false,
-      video_interval: formData.video_interval ?? 6,
-      grid_size: formData.grid_size ?? [2, 2],
       format: formData.format ?? [],
     })
   }, [
@@ -562,48 +554,7 @@ const NoteForm = () => {
               )}
             />
 
-            <div className="grid grid-cols-2 gap-4">
-              {/* 采样间隔 */}
-              <FormField
-                control={form.control}
-                name="video_interval"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>采样间隔（秒）</FormLabel>
-                    <Input disabled={!videoUnderstandingEnabled} type="number" {...field} />
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              {/* 拼图大小 */}
-              <FormField
-                control={form.control}
-                name="grid_size"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>拼图尺寸（列 × 行）</FormLabel>
-                    <div className="flex items-center space-x-2">
-                      <Input
-                        disabled={!videoUnderstandingEnabled}
-                        type="number"
-                        value={field.value?.[0] || 3}
-                        onChange={e => field.onChange([+e.target.value, field.value?.[1] || 3])}
-                        className="w-16"
-                      />
-                      <span>x</span>
-                      <Input
-                        disabled={!videoUnderstandingEnabled}
-                        type="number"
-                        value={field.value?.[1] || 3}
-                        onChange={e => field.onChange([field.value?.[0] || 3, +e.target.value])}
-                        className="w-16"
-                      />
-                    </div>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
+
             <Alert variant="warning" className="text-sm">
               <AlertDescription>
                 <strong>提示：</strong>视频理解功能必须使用多模态模型。

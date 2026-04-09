@@ -8,7 +8,7 @@ from typing import Tuple, Optional, List, Dict, Any
 
 
 # 常量定义
-KNOWLEDGE_GRAPH_MAX_DEPTH = 6
+KNOWLEDGE_GRAPH_MAX_DEPTH = 10
 ATOMIC_TYPE_TAGS = {'结论', '公式'}
 DECOMPOSABLE_TYPES = {'概念', '原理', '方法', '工具', '案例', '步骤', '对比'}
 KG_SEPARATOR = '<!-- KNOWLEDGE_GRAPH -->'

@@ -76,9 +76,10 @@ class TestScreenshotPromptContent(unittest.TestCase):
 
         call_args = mock_gpt.summarize.call_args
         source = call_args[0][0]
-        # Verify exact *Screenshot-[mm:ss] format with correct midpoint time
-        self.assertIn("*Screenshot-[00:30]", source.extras)
+        # Verify prompt contains screenshot format description and time range
+        self.assertIn("*Screenshot-[mm:ss]", source.extras)
         self.assertIn("原片截图", source.extras)
+        self.assertIn("[00:00 - 01:00]", source.extras)
 
     def test_leaf_prompt_contains_screenshot_instruction_with_correct_format(self):
         """知识点级 prompt 应包含格式正确的截图指令"""
@@ -113,9 +114,10 @@ class TestScreenshotPromptContent(unittest.TestCase):
 
         call_args = mock_gpt.summarize.call_args
         source = call_args[0][0]
-        # Verify exact *Screenshot-[mm:ss] format with correct midpoint time
-        self.assertIn("*Screenshot-[00:20]", source.extras)
+        # Verify prompt contains screenshot format description and time range
+        self.assertIn("*Screenshot-[mm:ss]", source.extras)
         self.assertIn("原片截图", source.extras)
+        self.assertIn("[00:10 - 00:30]", source.extras)
 
     def test_screenshot_instruction_absent_when_conditions_not_met(self):
         """条件不满足时，prompt 中不应包含截图指令"""

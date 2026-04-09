@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 from app.models.transcriber_model import TranscriptSegment, TranscriptResult
 from app.utils.segment_aligner import KGNodeWithTimestamp
+from app.utils.toc_generator import generate_toc_from_markdown
 from app.gpt.base import GPT
 from app.models.gpt_model import GPTSource
 
@@ -76,24 +77,26 @@ class DetailedNotesGenerator:
         sections = []
         total_nodes = 0
 
-        # 1. 生成笔记目录（无 LLM 调用）
-        toc = self._generate_toc(aligned_nodes)
-        if toc:
-            sections.append(toc)
-
-        # 2. 遍历节点生成章节/知识点内容
+        # 遍历节点生成章节/知识点内容
         for node in aligned_nodes:
             total_nodes += self._count_node_and_descendants(node)
             section = self._process_node(node)
             if section:
                 sections.append(section)
 
-        # 3. 生成视频整体总结（1次 LLM 调用）
+        # 生成视频整体总结（1次 LLM 调用）
         summary = self._generate_video_summary(aligned_nodes)
         if summary:
             sections.append(summary)
 
-        markdown = "\n\n".join(sections)
+        full_markdown = "\n\n".join(sections)
+
+        # 基于完整 markdown 生成 TOC 目录并插入锚点
+        toc, modified_markdown = generate_toc_from_markdown(full_markdown)
+        if toc:
+            markdown = toc + "\n\n" + modified_markdown
+        else:
+            markdown = full_markdown
 
         return GenerationResult(
             markdown=markdown,
@@ -145,9 +148,11 @@ class DetailedNotesGenerator:
 """
 
         if self.should_insert_screenshots:
-            mid_time = self._format_time((node.start_time + node.end_time) / 2)
+            start_time = self._format_time(node.start_time)
+            end_time = self._format_time(node.end_time)
             prompt += f"""
-6. 【原片截图】请在章节内容结束后，插入一个原片截图标记，格式为 *Screenshot-[{mid_time}]。
+6. 【原片截图】在需要的地方插入截图标记，格式为 *Screenshot-[mm:ss]，
+   其中 mm:ss 是你认为最适合展示的时间点（在该章节时间范围 [{start_time} - {end_time}] 内选择）。
    这些标记会被自动替换为对应时间点的视频关键帧截图。
 """
 
@@ -195,9 +200,11 @@ class DetailedNotesGenerator:
 """
 
         if self.should_insert_screenshots:
-            mid_time = self._format_time((node.start_time + node.end_time) / 2)
+            start_time = self._format_time(node.start_time)
+            end_time = self._format_time(node.end_time)
             prompt += f"""
-7. 【原片截图】请在知识点内容结束后，插入一个原片截图标记，格式为 *Screenshot-[{mid_time}]。
+7. 【原片截图】在需要的地方插入截图标记，格式为 *Screenshot-[mm:ss]，
+   其中 mm:ss 是你认为最适合展示的时间点（在该知识点时间范围 [{start_time} - {end_time}] 内选择）。
    这些标记会被自动替换为对应时间点的视频关键帧截图。
 """
 
@@ -251,27 +258,6 @@ class DetailedNotesGenerator:
         for child in node.children:
             count += self._count_node_and_descendants(child)
         return count
-
-    def _generate_toc(self, aligned_nodes: List[KGNodeWithTimestamp]) -> str:
-        """
-        生成笔记目录（无需 LLM 调用，纯遍历拼接）
-
-        Args:
-            aligned_nodes: 带时间戳的知识图谱节点列表
-
-        Returns:
-            str: 目录 markdown 字符串
-        """
-        if not aligned_nodes:
-            return ""
-
-        lines = ["## 笔记目录", ""]
-        for i, node in enumerate(aligned_nodes, 1):
-            start = self._format_time(node.start_time)
-            end = self._format_time(node.end_time)
-            lines.append(f"{i}. {node.node_name} [{start} - {end}]")
-
-        return "\n".join(lines)
 
     def _generate_video_summary(
         self,

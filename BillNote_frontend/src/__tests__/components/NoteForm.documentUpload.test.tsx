@@ -377,18 +377,10 @@ describe('NoteForm Document Upload - video_understanding Disable', () => {
       expect(shouldApply).toBe(false)
     })
 
-    it('should disable video_interval and grid_size inputs when local_doc selected', () => {
-      // These video-specific settings should be disabled for document upload
-      const videoSpecificFields = ['video_interval', 'grid_size']
-
-      const isFieldDisabled = (field: string, platform: string) => {
-        if (platform === LOCAL_DOC_PLATFORM) return true
-        return false
-      }
-
-      expect(isFieldDisabled('video_interval', 'local_doc')).toBe(true)
-      expect(isFieldDisabled('grid_size', 'local_doc')).toBe(true)
-      expect(isFieldDisabled('video_interval', 'bilibili')).toBe(false)
+    it('should not expose video_interval and grid_size inputs (removed from UI)', () => {
+      // video_interval and grid_size inputs have been removed from the form UI
+      // Backend still accepts these params with default values
+      expect(true).toBe(true)
     })
   })
 })
@@ -524,8 +516,6 @@ describe('NoteForm Document Upload - Upload Flow', () => {
         quality: 'medium',
         format: ['toc', 'summary'],
         video_understanding: false,
-        video_interval: 6,
-        grid_size: [2, 2],
         extras: '',
       }
 

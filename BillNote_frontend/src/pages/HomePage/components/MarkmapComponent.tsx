@@ -26,6 +26,12 @@ const decodeHtmlEntities = (text: string): string => {
   return textarea.value;
 };
 
+// 移除所有 Markdown 图片标记，禁止在思维导图中显示图片
+const stripMarkdownImages = (text: string): string => {
+  if (!text) return text;
+  return text.replace(/!\[([^\]]*)\]\([^)]*\)/g, '');
+};
+
 // 清理HTML标签，只保留纯文本
 const stripHtml = (html: string): string => {
   if (!html) return html;
@@ -117,7 +123,8 @@ export default function MarkmapEditor({
   // 导出HTML思维导图
   const exportHtml = () => {
     try {
-      const { root } = transformer.transform(value)
+      const cleanValue = stripMarkdownImages(value)
+      const { root } = transformer.transform(cleanValue)
       const data = JSON.stringify(root)
       
       // 创建HTML内容
@@ -255,7 +262,8 @@ export default function MarkmapEditor({
   // 导出XMind格式思维导图
   const exportXMind = async () => {
     try {
-      const { root } = transformer.transform(value);
+      const cleanValue = stripMarkdownImages(value);
+      const { root } = transformer.transform(cleanValue);
 
       // 生成唯一ID
       const generateId = () => Math.random().toString(36).substring(2, 15);
@@ -450,7 +458,8 @@ export default function MarkmapEditor({
   useEffect(() => {
     const mm = mmRef.current
     if (!mm) return
-    const { root } = transformer.transform(value)
+    const cleanValue = stripMarkdownImages(value)
+    const { root } = transformer.transform(cleanValue)
 
     // 存储根节点数据
     rootDataRef.current = root

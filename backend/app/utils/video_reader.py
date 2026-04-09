@@ -26,7 +26,8 @@ class VideoReader:
                  frame_dir=None,
                  grid_dir=None,
                  use_scene_detection=False,
-                 max_scene_frames=36):
+                 max_scene_frames=36,
+                 task_id: Optional[str] = None):
         # Use system font path if not provided, fallback to a common location
         if font_path is None:
             system = platform.system()
@@ -43,8 +44,13 @@ class VideoReader:
         self.unit_width = unit_width
         self.unit_height = unit_height
         self.save_quality = save_quality
-        self.frame_dir = frame_dir or get_app_dir("output_frames")
-        self.grid_dir = grid_dir or get_app_dir("grid_output")
+        # 按 task_id 隔离输出目录，避免并发任务互相覆盖
+        if task_id:
+            self.frame_dir = frame_dir or get_app_dir(os.path.join(task_id, "output_frames"))
+            self.grid_dir = grid_dir or get_app_dir(os.path.join(task_id, "grid_output"))
+        else:
+            self.frame_dir = frame_dir or get_app_dir("output_frames")
+            self.grid_dir = grid_dir or get_app_dir("grid_output")
         self.use_scene_detection = use_scene_detection
         self.max_scene_frames = max_scene_frames
         logger.debug(f"VideoReader 初始化: video_path={video_path}, frame_dir={self.frame_dir}, grid_dir={self.grid_dir}")

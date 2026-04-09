@@ -231,6 +231,7 @@ class NoteGenerator:
                     formats=_format,
                     audio_meta=audio_meta,
                     platform=platform,
+                    task_id=task_id,
                 )
 
             markdown = prepend_source_link(markdown, str(video_url))
@@ -295,7 +296,7 @@ class NoteGenerator:
                         if detailed_notes:
                             if self.video_path and self.video_path.exists():
                                 try:
-                                    detailed_notes = self._insert_screenshots(detailed_notes, self.video_path)
+                                    detailed_notes = self._insert_screenshots(detailed_notes, self.video_path, task_id=task_id)
                                 except Exception as e:
                                     logger.warning(f"详细笔记截图插入失败，跳过: {e}")
                             else:
@@ -483,7 +484,7 @@ class NoteGenerator:
         if screenshot and not grid_size:
             grid_size = [2, 2]
         frame_interval = video_interval if video_interval and video_interval > 0 else 6
-        use_scene_detection = not (video_interval and video_interval > 0)
+        use_scene_detection = True
 
         # 已有缓存，尝试加载
         if audio_cache_file.exists():
@@ -542,6 +543,7 @@ class NoteGenerator:
                         save_quality=80,
                         use_scene_detection=use_scene_detection,
                         max_scene_frames=grid_size[0] * grid_size[1] * 4,
+                        task_id=task_id,
                     ).run()
                 else:
                     logger.info("未指定 grid_size，跳过缩略图生成")
@@ -603,6 +605,7 @@ class NoteGenerator:
                     save_quality=80,
                     use_scene_detection=use_scene_detection,
                     max_scene_frames=grid_size[0] * grid_size[1] * 4,
+                    task_id=task_id,
                 ).run()
             else:
                 logger.info("未指定 grid_size，跳过缩略图生成")
@@ -767,6 +770,7 @@ class NoteGenerator:
         formats: List[str],
         audio_meta: AudioDownloadResult,
         platform: str,
+        task_id: Optional[str] = None,
     ) -> str:
         """
         对生成的 Markdown 做后期处理：插入截图和/或插入链接。
@@ -776,11 +780,12 @@ class NoteGenerator:
         :param formats: 包含 'link' 或 'screenshot' 的列表
         :param audio_meta: AudioDownloadResult 元信息，用于链接替换
         :param platform: 平台标识，用于链接替换
+        :param task_id: 任务 ID，用于隔离截图输出目录
         :return: 处理后的 Markdown 字符串
         """
         if "screenshot" in formats and video_path:
             try:
-                markdown = self._insert_screenshots(markdown, video_path)
+                markdown = self._insert_screenshots(markdown, video_path, task_id=task_id)
             except Exception as exc:
                 logger.warning("截图插入失败，跳过该步骤")
 
@@ -792,30 +797,41 @@ class NoteGenerator:
 
         return markdown
 
-    def _insert_screenshots(self, markdown: str, video_path: Path) -> str:
+    def _insert_screenshots(self, markdown: str, video_path: Path, task_id: Optional[str] = None) -> str:
         """
         扫描 Markdown 文本中所有 Screenshot 标记，并替换为实际生成的截图链接。
 
         :param markdown: 含有 *Screenshot-mm:ss 或 Screenshot-[mm:ss] 标记的 Markdown 文本
         :param video_path: 本地视频文件路径
+        :param task_id: 任务 ID，用于隔离截图输出目录
         :return: 替换后的 Markdown 字符串
         """
         matches: List[Tuple[str, int]] = extract_screenshot_timestamps(markdown)
         if not matches:
             logger.info("未找到任何 Screenshot 标记，跳过截图插入")
             return markdown
-        logger.info(f"找到 {len(matches)} 个 Screenshot 标记，开始替换")
+
+        # 按 task_id 隔离截图输出目录，避免并发任务互相覆盖
+        if task_id:
+            task_output_dir = os.path.join(IMAGE_OUTPUT_DIR, task_id)
+            task_base_url = f"{IMAGE_BASE_URL.rstrip('/')}/{task_id}"
+        else:
+            task_output_dir = IMAGE_OUTPUT_DIR
+            task_base_url = IMAGE_BASE_URL
+        os.makedirs(task_output_dir, exist_ok=True)
+
+        logger.info(f"找到 {len(matches)} 个 Screenshot 标记，开始替换 (output_dir={task_output_dir})")
         replaced_count = 0
         for idx, (marker, ts) in enumerate(matches):
             try:
-                img_path = generate_screenshot(str(video_path), str(IMAGE_OUTPUT_DIR), ts, idx)
+                img_path = generate_screenshot(str(video_path), str(task_output_dir), ts, idx)
                 # 验证截图实际生成成功（generate_screenshot 返回路径但不保证文件存在）
                 if not os.path.exists(img_path):
                     logger.warning(f"截图文件未生成 (timestamp={ts})，跳过该标记")
                     continue
                 filename = Path(img_path).name
-                # 构建前端可访问的 URL，例如 /static/screenshots/{filename}
-                img_url = f"{IMAGE_BASE_URL.rstrip('/')}/{filename}"
+                # 构建前端可访问的 URL，例如 /static/screenshots/{task_id}/{filename}
+                img_url = f"{task_base_url.rstrip('/')}/{filename}"
                 markdown = markdown.replace(marker, f"![]({img_url})", 1)
                 replaced_count += 1
                 logger.info(f"截图替换成功: {marker} -> {img_url}")
