@@ -77,6 +77,22 @@ class VideoReader:
             return mm * 60 + ss
         return float('inf')
 
+    @staticmethod
+    def _validate_frame_file(path: str) -> bool:
+        """验证帧文件是否有效：存在、非空、可被 PIL 正常解析。"""
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return False
+        try:
+            with Image.open(path) as img:
+                img.verify()
+            return True
+        except OSError as e:
+            logger.warning(f"帧文件 IO 错误: {path}, 错误: {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"帧文件无法解析: {path}, 错误: {e}")
+            return False
+
     def _extract_single_frame(self, ts: int) -> str | None:
         """提取单帧，返回输出路径或 None（失败时）。"""
         time_label = self.format_time(ts)
@@ -84,6 +100,9 @@ class VideoReader:
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", str(ts), "-i", self.video_path, "-frames:v", "1", "-q:v", "2", "-y", output_path]
         try:
             subprocess.run(cmd, check=True)
+            if not self._validate_frame_file(output_path):
+                logger.warning(f"帧文件无效或损坏，跳过: {output_path}")
+                return None
             return output_path
         except subprocess.CalledProcessError:
             return None
@@ -132,11 +151,9 @@ class VideoReader:
 
             return self._extract_frames_at_timestamps(timestamps)
         except ImportError:
-            logger.warning("PySceneDetect 未安装，回退到固定间隔采样")
-            return self._extract_frames_fixed_interval(max_frames)
-        except Exception as e:
-            logger.warning(f"场景检测失败: {e}，回退到固定间隔采样")
-            return self._extract_frames_fixed_interval(max_frames)
+            raise ImportError(
+                "PySceneDetect 未安装，请运行 'pip install scenedetect[opencv]' 安装后重试"
+            )
 
     def _extract_frames_fixed_interval(self, max_frames: int) -> list[str]:
         """原有的固定间隔采样逻辑"""
@@ -193,18 +210,26 @@ class VideoReader:
         group_size = self.grid_size[0] * self.grid_size[1]
         return [image_files[i:i + group_size] for i in range(0, len(image_files), group_size)]
 
-    def concat_images(self, image_paths: list[str], name: str) -> str:
+    def concat_images(self, image_paths: list[str], name: str) -> str | None:
         os.makedirs(self.grid_dir, exist_ok=True)
         font = ImageFont.truetype(self.font_path, 48) if os.path.exists(self.font_path) else ImageFont.load_default()
         images = []
 
         for path in image_paths:
-            img = Image.open(path).convert("RGB").resize((self.unit_width, self.unit_height), Image.Resampling.LANCZOS)
+            try:
+                img = Image.open(path).convert("RGB").resize((self.unit_width, self.unit_height), Image.Resampling.LANCZOS)
+            except Exception as e:
+                logger.warning(f"帧文件损坏，跳过: {path}, 错误: {e}")
+                continue
             timestamp = re.search(r"frame_(\d{2})_(\d{2})\.jpg", os.path.basename(path))
             time_text = f"{timestamp.group(1)}:{timestamp.group(2)}" if timestamp else ""
             draw = ImageDraw.Draw(img)
             draw.text((10, 10), time_text, fill="yellow", font=font, stroke_width=1, stroke_fill="black")
             images.append(img)
+
+        if not images:
+            logger.warning(f"网格 {name} 中所有帧均无效，跳过生成")
+            return None
 
         cols, rows = self.grid_size
         grid_img = Image.new("RGB", (self.unit_width * cols, self.unit_height * rows), (255, 255, 255))
@@ -246,12 +271,13 @@ class VideoReader:
             groups = self.group_images()
             for idx, group in enumerate(groups, start=1):
                 if len(group) < self.grid_size[0] * self.grid_size[1]:
-                    logger.warning(f"⚠️ 跳过第 {idx} 组，图片不足 {self.grid_size[0] * self.grid_size[1]} 张")
+                    logger.warning(f"跳过第 {idx} 组，图片不足 {self.grid_size[0] * self.grid_size[1]} 张")
                     continue
                 out_path = self.concat_images(group, f"grid_{idx}")
-                image_paths.append(out_path)
+                if out_path:
+                    image_paths.append(out_path)
 
-            logger.info("📤 开始编码图像...")
+            logger.info("开始编码图像...")
             urls = self.encode_images_to_base64(image_paths)
             return urls
         except Exception as e:

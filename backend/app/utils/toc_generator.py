@@ -1,7 +1,8 @@
 """
 TOC 目录生成工具
 
-扫描 Markdown 中所有标题行，生成带锚点的目录，并在原文标题前插入锚点标记。
+扫描 Markdown 中所有标题行，生成带锚点的目录。
+前端 rehype-slug 会自动为标题生成 id，无需手动插入锚点标记。
 """
 
 import re
@@ -10,37 +11,32 @@ from typing import Tuple, Dict
 
 def _generate_slug(text: str) -> str:
     """
-    将标题文本转为 slug 锚点 ID。
-    - 中文保留
-    - 空格转 -
-    - 移除特殊字符（保留字母、数字、中文、连字符）
-    - 转小写（仅英文部分）
+    将标题文本转为 slug 锚点 ID，与 rehype-slug (github-slugger v2) 行为对齐。
+    规则：小写 → 空格转 '-' → 移除非 [字母/数字/连接符标点/组合标记/连字符] 字符。
+    不合并连续连字符，不去除首尾连字符。
     """
-    slug = text.strip()
-    # 转小写
-    slug = slug.lower()
-    # 空格转连字符
+    slug = text.strip().lower()
     slug = slug.replace(' ', '-')
-    # 只保留：字母、数字、中文、连字符、下划线
-    slug = re.sub(r'[^\w\u4e00-\u9fff-]', '', slug)
-    # 合并连续连字符
-    slug = re.sub(r'-{2,}', '-', slug)
-    # 去除首尾连字符
-    slug = slug.strip('-')
+    # 保留：Unicode 字母、数字、连接符标点(如 _)、组合标记、连字符
+    # \w 在 Python 3 中匹配 Unicode 字母/数字/下划线
+    # \u0300-\u036f 覆盖常见组合变音标记（对应 \p{M} 的常用子集）
+    slug = re.sub(r'[^\w\u0300-\u036f-]', '', slug)
     return slug
 
 
 def generate_toc_from_markdown(markdown: str) -> Tuple[str, str]:
     """
-    扫描 Markdown 文本中的所有标题行，生成 TOC 目录和带锚点标记的正文。
+    扫描 Markdown 文本中的所有标题行，生成 TOC 目录。
+
+    前端 rehype-slug 会自动为标题元素生成 id 属性，因此不修改原始 Markdown。
 
     Args:
         markdown: 原始 Markdown 文本
 
     Returns:
-        (toc_string, modified_markdown) 元组
+        (toc_string, markdown) 元组
         - toc_string: 生成的目录 Markdown 段落
-        - modified_markdown: 在每个标题前插入了 <a id="slug"></a> 的 Markdown 文本
+        - markdown: 未修改的原始 Markdown 文本
     """
     # 匹配标题行：## 标题, ### 标题, #### 标题 等
     heading_pattern = re.compile(r'^(#{2,6})\s+(.+)$', re.MULTILINE)
@@ -81,11 +77,4 @@ def generate_toc_from_markdown(markdown: str) -> Tuple[str, str]:
 
     toc_string = "\n".join(toc_lines)
 
-    # 第二遍：在原文每个标题行前插入锚点标记（从后往前替换，避免偏移）
-    modified = markdown
-    for level, text, slug, match in reversed(headings):
-        anchor = f'<a id="{slug}"></a>\n'
-        start = match.start()
-        modified = modified[:start] + anchor + modified[start:]
-
-    return (toc_string, modified)
+    return (toc_string, markdown)

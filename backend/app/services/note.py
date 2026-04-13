@@ -481,7 +481,7 @@ class NoteGenerator:
 
         # 提前计算视频相关变量（缓存命中分支也需要使用）
         need_video = screenshot or video_understanding
-        if screenshot and not grid_size:
+        if need_video and not grid_size:
             grid_size = [2, 2]
         frame_interval = video_interval if video_interval and video_interval > 0 else 6
         use_scene_detection = True
@@ -811,13 +811,9 @@ class NoteGenerator:
             logger.info("未找到任何 Screenshot 标记，跳过截图插入")
             return markdown
 
-        # 按 task_id 隔离截图输出目录，避免并发任务互相覆盖
-        if task_id:
-            task_output_dir = os.path.join(IMAGE_OUTPUT_DIR, task_id)
-            task_base_url = f"{IMAGE_BASE_URL.rstrip('/')}/{task_id}"
-        else:
-            task_output_dir = IMAGE_OUTPUT_DIR
-            task_base_url = IMAGE_BASE_URL
+        # 截图文件名已包含 UUID，天然并发安全，无需 task_id 子目录
+        task_output_dir = IMAGE_OUTPUT_DIR
+        task_base_url = IMAGE_BASE_URL
         os.makedirs(task_output_dir, exist_ok=True)
 
         logger.info(f"找到 {len(matches)} 个 Screenshot 标记，开始替换 (output_dir={task_output_dir})")
@@ -830,7 +826,7 @@ class NoteGenerator:
                     logger.warning(f"截图文件未生成 (timestamp={ts})，跳过该标记")
                     continue
                 filename = Path(img_path).name
-                # 构建前端可访问的 URL，例如 /static/screenshots/{task_id}/{filename}
+                # 构建前端可访问的 URL，例如 /static/screenshots/{filename}
                 img_url = f"{task_base_url.rstrip('/')}/{filename}"
                 markdown = markdown.replace(marker, f"![]({img_url})", 1)
                 replaced_count += 1

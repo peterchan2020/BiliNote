@@ -13,7 +13,7 @@ export const generateNote = async (data: {
   extras?: string
   video_understand?: boolean
   video_interval?: number
-  grid_size: Array<number>
+  grid_size?: Array<number>
 }) => {
   try {
     console.log('generateNote', data)

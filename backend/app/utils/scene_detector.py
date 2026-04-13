@@ -2,8 +2,7 @@
 PySceneDetect 场景检测模块
 用于智能检测视频中的场景边界，并提取关键帧
 """
-from scenedetect import VideoManager, SceneManager
-from scenedetect.detectors import ContentDetector
+from scenedetect import open_video, SceneManager, ContentDetector
 
 from app.utils.logger import get_logger
 
@@ -13,7 +12,7 @@ logger = get_logger(__name__)
 DEFAULT_THRESHOLD = 30.0  # ContentDetector 敏感度，值越小越敏感
 DEFAULT_MIN_SCENE_LEN = 15  # 最小场景帧数，避免检测到噪点
 DEFAULT_MAX_FRAMES = 36  # 最大帧数限制（适配 3x3 网格）
-DOWNSCALE_FACTOR = 2  # 视频下采样因子，用于提升检测性能
+
 
 
 class SceneDetector:
@@ -32,7 +31,7 @@ class SceneDetector:
             video_path: 视频文件路径
         """
         self.video_path = video_path
-        self._video_manager = None
+        self._video = None
         self._scene_manager = None
         self._scenes = []
         self._fps = None
@@ -44,7 +43,7 @@ class SceneDetector:
         Returns:
             list: 场景列表，每个元素为 (start_timecode, end_timecode) 元组
         """
-        self._video_manager = VideoManager([self.video_path])
+        self._video = open_video(self.video_path)
         self._scene_manager = SceneManager()
         self._scene_manager.add_detector(
             ContentDetector(
@@ -53,16 +52,12 @@ class SceneDetector:
             )
         )
 
-        # 性能优化：下采样 2x
-        self._video_manager.set_downscale_factor(DOWNSCALE_FACTOR)
-        self._video_manager.start()
-
-        # 执行检测
-        self._scene_manager.detect_scenes(frame_source=self._video_manager)
+        # 执行检测（SceneManager 默认 auto_downscale=True，自动选择最优下采样因子）
+        self._scene_manager.detect_scenes(video=self._video)
         self._scenes = self._scene_manager.get_scene_list()
 
         # 获取帧率用于时间转换
-        self._fps = self._video_manager.get_framerate()
+        self._fps = self._video.frame_rate
 
         logger.info(f"检测到 {len(self._scenes)} 个场景，帧率: {self._fps:.2f}fps")
 
@@ -116,9 +111,7 @@ class SceneDetector:
 
     def release(self):
         """释放资源"""
-        if self._video_manager:
-            self._video_manager.release()
-            self._video_manager = None
+        self._video = None
         self._scene_manager = None
 
     def __enter__(self):
